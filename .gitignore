@@ -1,0 +1,14 @@
+node_modules/
+.insideout-dev/
+.insideout-qa/
+*.tgz
+coverage/
+.DS_Store
+artifacts/screenshots/
+.playwright-cli/
+output/playwright/
+
+.insideout-demo/
+
+# Local delivery evidence and generated artifacts
+output/
