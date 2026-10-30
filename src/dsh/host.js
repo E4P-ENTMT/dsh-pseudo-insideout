@@ -125,6 +125,7 @@ export function createHttpHandler({ getService, token = randomBytes(32).toString
       [`${CONSOLE_BASE}/index.html`, ['index.html', 'text/html; charset=utf-8']],
       [`${CONSOLE_BASE}/app.js`, ['app.js', 'text/javascript; charset=utf-8']],
       [`${CONSOLE_BASE}/styles.css`, ['styles.css', 'text/css; charset=utf-8']],
+      [`${CONSOLE_BASE}/assets/logo.png`, ['assets/logo.png', 'image/png']],
     ])
     const match = names.get(url.pathname)
     if (!match) return failure(res, 404, 'resource/not-found', '资源不存在。')

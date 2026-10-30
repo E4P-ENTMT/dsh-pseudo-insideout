@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="web/assets/logo.png" width="180" height="180" alt="InsideOut：锦盒收藏七彩记忆宝珠">
+</p>
+
 # dsh-pseudo-insideout
 
 给 DeepSeek Harness 的记忆与状态插件：经历形成记忆，理解可以更新，退出日常召回的记忆完整封存。带可视化总部、记忆球、情绪控制台、人格岛、梦工坊及独立档案馆。
