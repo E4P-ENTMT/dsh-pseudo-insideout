@@ -1,7 +1,7 @@
-// Run: node test/fixtures/verify-dsh-e2e.mjs --runtime /path/to/dsh/runtime [--tarball /path/final.tgz] [--keep]
+// Run: node test/fixtures/verify-dsh-e2e.mjs --runtime /path/to/dsh/runtime [--tarball /path/final.tgz] [--output /path/to/report-directory] [--keep]
 // Uses a new isolated profile, localhost-only synthetic provider, and real DSH loop.
 import { createServer } from 'node:http'
-import { mkdtemp, mkdir, readFile, writeFile, open } from 'node:fs/promises'
+import { mkdtemp, mkdir, readFile, writeFile, open, symlink } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join, resolve, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -17,12 +17,15 @@ if (runtimeArg < 0 || !process.argv[runtimeArg + 1]) throw new Error('--runtime 
 const runtime = resolve(process.argv[runtimeArg + 1]), dsh = join(runtime, 'node_modules/.bin/dsh')
 const tarballArg = process.argv.indexOf('--tarball')
 if (tarballArg >= 0 && !process.argv[tarballArg + 1]?.endsWith('.tgz')) throw new Error('--tarball must name an existing npm .tgz archive')
+const outputArg = process.argv.indexOf('--output')
+if (outputArg >= 0 && (!process.argv[outputArg + 1] || process.argv[outputArg + 1].startsWith('--'))) throw new Error('--output must name a report directory')
+const outputOverride = outputArg >= 0 ? resolve(process.argv[outputArg + 1]) : undefined
 const isolated = await mkdtemp(join(tmpdir(), 'insideout-growth-e2e-'))
 const workspace = join(isolated, 'work'), home = join(isolated, 'dsh-home')
-let out = join(project, 'output/delivery', JSON.parse(await readFile(join(project, 'package.json'), 'utf8')).version)
+let out = outputOverride || join(isolated, 'report')
 await Promise.all([mkdir(join(workspace, 'secondary'), { recursive: true }), mkdir(home), mkdir(out, { recursive: true })])
 const token = randomBytes(24).toString('hex'), requests = []
-const report = { startedAt: new Date().toISOString(), dshVersion: '0.2.2-alpha.2', provider: 'localhost synthetic OpenAI-compatible SSE', realSupplierUsed: false, isolatedRoot: isolated, checks: [] }
+const report = { startedAt: new Date().toISOString(), dshVersion: null, nodeVersion: process.version, runtime, provider: 'localhost synthetic OpenAI-compatible SSE', realSupplierUsed: false, isolatedRoot: isolated, checks: [] }
 const check = (name, details = {}) => { report.checks.push({ name, passed: true, ...details }); console.log(JSON.stringify({ check: name, passed: true })) }
 const textOf = value => typeof value === 'string' ? value : Array.isArray(value) ? value.filter(v => v.type === 'text').map(v => v.text).join('\n') : ''
 const provider = createServer(async (req, res) => {
@@ -110,6 +113,9 @@ async function setDefault(enabled) {
 }
 const newContexts = events => events.filter(event => event.type === 'user/message' && event.data?.source?.kind !== 'user').map(event => JSON.stringify(event.data)).join('\n')
 try {
+  const dshVersion = (await command(['--version'], 'version.log')).trim()
+  assert.match(dshVersion, /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$/, 'DSH CLI did not return a valid version')
+  report.dshVersion = dshVersion
   let tarball
   if (tarballArg >= 0) tarball = resolve(process.argv[tarballArg + 1])
   else {
@@ -117,7 +123,7 @@ try {
     tarball = join(isolated, JSON.parse(packed.stdout)[0].filename)
   }
   const manifest = JSON.parse((await run('tar', ['-xOf', tarball, 'package/package.json'])).stdout)
-  out = join(project, 'output/delivery', manifest.version)
+  out = outputOverride || join(project, 'output/delivery', manifest.version, `dsh-${dshVersion}`)
   await mkdir(out, { recursive: true })
   report.package = { filename: tarball.split('/').at(-1), name: manifest.name, version: manifest.version, sha256: createHash('sha256').update(await readFile(tarball)).digest('hex'), source: tarballArg >= 0 ? 'supplied-tarball' : 'fresh-candidate-pack' }
   await command(['--profile', 'web', '--dump-config'], 'initial-config.private.log')
@@ -127,7 +133,13 @@ try {
     const packaged = (await run('tar', ['-xOf', tarball, 'package/' + path], { encoding: 'buffer', maxBuffer: 4e6 })).stdout
     assert.deepEqual(await readFile(join(profile, 'node_modules', manifest.name, path)), packaged, `Installed runtime differs from tarball: ${path}`)
   }
-  const patch = `- id: llm-pi-ai\n  config:\n    providers:\n      insideout-synthetic:\n        apiKeyEnv: INSIDEOUT_SYNTHETIC_KEY\n        api: openai-completions\n        baseURL: http://127.0.0.1:${providerPort}/v1\n        retryPolicy:\n          mode: normal\n          maxRetries: 0\n        models:\n          - id: insideout-test-model\n            contextWindow: 64000\n            maxTokens: 4000\n            reasoningEfforts: false\n- id: agent-default-model\n  config:\n    provider: insideout-synthetic\n    model: insideout-test-model\n- id: pseudo-insideout\n  config:\n    analyzeTurns: true\n- insert:\n    - id: insideout-synthetic-driver\n      name: ${JSON.stringify(join(here, 'dsh-e2e-driver.js'))}\n      config:\n        token: ${token}\n        workspace: ${JSON.stringify(workspace)}\n`
+  // Resolve the driver's DSH imports from the selected runtime, never this repo's
+  // pinned development dependencies. Keep the runtime itself unchanged.
+  const driverDir = join(isolated, 'driver'), driverFile = join(driverDir, 'dsh-e2e-driver.mjs')
+  await mkdir(driverDir)
+  await symlink(join(runtime, 'node_modules'), join(driverDir, 'node_modules'), 'junction')
+  await writeFile(driverFile, await readFile(join(here, 'dsh-e2e-driver.js')))
+  const patch = `- id: llm-pi-ai\n  config:\n    providers:\n      insideout-synthetic:\n        apiKeyEnv: INSIDEOUT_SYNTHETIC_KEY\n        api: openai-completions\n        baseURL: http://127.0.0.1:${providerPort}/v1\n        retryPolicy:\n          mode: normal\n          maxRetries: 0\n        models:\n          - id: insideout-test-model\n            contextWindow: 64000\n            maxTokens: 4000\n            reasoningEfforts: false\n- id: agent-default-model\n  config:\n    provider: insideout-synthetic\n    model: insideout-test-model\n- id: pseudo-insideout\n  config:\n    analyzeTurns: true\n- insert:\n    - id: insideout-synthetic-driver\n      name: ${JSON.stringify(driverFile)}\n      config:\n        token: ${token}\n        workspace: ${JSON.stringify(workspace)}\n`
   await writeFile(join(profile, 'cordis.patch.yml'), patch, { mode: 0o600 })
   await command(['--profile', 'web', '--dump-config'], 'effective-config.private.log')
   const log = await open(join(isolated, 'host.private.log'), 'w', 0o600)
@@ -163,7 +175,7 @@ try {
   assert.ok(toolTurn.events.some(v => v.type === 'tool/call'))
   const toolReturn = toolTurn.events.find(v => v.type === 'tool/result')
   assert.ok(toolReturn); assert.ok(JSON.stringify(toolReturn).includes('E2E_PRIVATE_ALPHA_7429'))
-  check('真实模型工具调用经官方 native executor 返回活跃记忆')
+  check('真实模型工具调用经官方原生工具管线返回活跃记忆')
   const recalls = await api('/recalls?sessionId=' + a)
   const usage = recalls.items.flatMap(v => v.usage || [])
   assert.ok(usage.some(v => v.purpose === 'semantic-recall' && v.inputTokens > 0 && v.status === 'success'))

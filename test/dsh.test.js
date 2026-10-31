@@ -42,6 +42,7 @@ async function harness(t, options = {}) {
     const a = { session: { id, header: { id, cwd, agentPreset: preset, origin } }, model: { current: () => ({ provider: 'test', model: 'model' }) } }
     const scope = createScope(ctx, a)
     a.ctx = scope.ctx
+    options.configureAgent?.(a)
     agents.push(a)
     t.after(() => scope.dispose())
     await ctx.serial(scopeTarget(a, a), 'agent/created', { agent: a, source: 'create' })
@@ -378,6 +379,99 @@ test('semantic recall calls the host once per turn and rejects stale or out-of-s
   s.updateConfig({ semanticEnabled: false })
   await h.preStep(a, 3, [message('u3', '再想想')])
   assert.equal(calls, 2)
+})
+
+test('legacy hosts use the current assembled model for recall and completed request for analysis, isolated per agent', async t => {
+  const selections = new Map(), headers = new Map(), requests = []
+  const h = await harness(t, { config: { analyzeTurns: true }, configureAgent(a) {
+    delete a.model
+    a.options = { provider: 'initial', model: 'initial' }
+    a.session.requestHeader = () => ({ config: headers.get(a.session.id) })
+    // Emulate 0.2.1 installModelSelection, installed before plugin mount.
+    a.ctx.on('system-prompt/assemble', async (_assembly, _context, next) => {
+      const assembled = await next()
+      return { ...assembled, variables: { ...assembled.variables, ...selections.get(a.session.id) } }
+    })
+  }, llm: jsonModel(request => {
+    requests.push({ session: request.sessionId, turn: request.turnId, provider: request.provider, model: request.model, purpose: request.maxTokens === 1200 ? 'recall' : 'analysis' })
+    return request.maxTokens === 1200 ? { semanticHits: [] } : { confidence: 0.9, reason: '旧宿主提炼', memory: extractedMemory() }
+  }) })
+  const a = await h.agent('legacy-a'), b = await h.agent('legacy-b')
+  const service = h.services.find(value => value.state().runtime.connected)
+  for (const agent of [a, b]) service.createMemory({ content: '简洁表达', source: { type: 'user', sessionId: agent.session.id } })
+  headers.set(a.session.id, { provider: 'previous', model: 'previous' })
+  selections.set(a.session.id, { provider: 'selected-a', model: 'a-one' })
+  h.emit(a, 'turn/start', { turn: 1 })
+  await h.ctx.systemPrompt.assemble({ scope: a, agent: a })
+  selections.get(a.session.id).model = 'not-assembled-yet'
+  await h.preStep(a, 1, [message('a1', '简洁表达')])
+  h.emit(a, 'user/message', message('a1', '我偏好简洁表达'))
+  headers.set(a.session.id, { provider: 'actual-a', model: 'completed-a' })
+  h.emit(a, 'turn/end', { turn: 1, reason: { kind: 'completed' } })
+  headers.get(a.session.id).model = 'changed-after-turn'
+  await settle()
+  assert.ok(service.listMemories({}).items.some(item => item.extraction?.method === 'host-model'))
+
+  selections.set(a.session.id, { provider: 'switched-a', model: 'a-two' })
+  selections.set(b.session.id, { provider: 'selected-b', model: 'b-one' })
+  h.emit(a, 'turn/start', { turn: 2 }); h.emit(b, 'turn/start', { turn: 1 })
+  await h.ctx.systemPrompt.assemble({ scope: a, agent: a })
+  await h.ctx.systemPrompt.assemble({ scope: b, agent: b })
+  await h.preStep(a, 2, [message('a2', '简洁表达')])
+  await h.preStep(b, 1, [message('b1', '简洁表达')])
+  assert.deepEqual(requests, [
+    { session: 'legacy-a', turn: '1', provider: 'selected-a', model: 'a-one', purpose: 'recall' },
+    { session: 'legacy-a', turn: '1', provider: 'actual-a', model: 'completed-a', purpose: 'analysis' },
+    { session: 'legacy-a', turn: '2', provider: 'switched-a', model: 'a-two', purpose: 'recall' },
+    { session: 'legacy-b', turn: '1', provider: 'selected-b', model: 'b-one', purpose: 'recall' },
+  ])
+})
+
+test('legacy recall falls back only without selection variables and clears invalid or unassembled routes', async t => {
+  let variables = {}, header, calls = []
+  const h = await harness(t, { configureAgent(a) {
+    delete a.model
+    a.options = { provider: 'configured', model: 'initial' }
+    a.session.requestHeader = () => header
+    a.ctx.on('system-prompt/assemble', async (_assembly, _context, next) => ({ ...await next(), variables }))
+  }, llm: jsonModel(request => { calls.push(request.model); return { semanticHits: [] } }) })
+  const a = await h.agent(), s = h.services.find(value => value.state().runtime.connected)
+  s.createMemory({ content: '检索候选', source: { type: 'user', sessionId: a.session.id } })
+  for (let turn = 1; turn <= 5; turn++) {
+    h.emit(a, 'turn/start', { turn })
+    if (turn === 2) header = { config: { provider: 'actual', model: 'last-request' } }
+    if (turn === 3) header = { config: { provider: 'configured', model: 'initial' } }
+    if (turn === 4) variables = { provider: 'incomplete-selection' }
+    if (turn !== 5) await h.ctx.systemPrompt.assemble({ scope: a, agent: a })
+    await h.preStep(a, turn, [message(`u${turn}`, '检索候选')])
+  }
+  assert.deepEqual(calls, ['initial', 'initial'], 'a conflicting historical header cannot route recall to a previous provider')
+})
+
+test('modern model selection and pre-step snapshots take priority over legacy routes', async t => {
+  const calls = []
+  let selected = { provider: 'modern', model: 'current' }
+  const h = await harness(t, { config: { analyzeTurns: true }, configureAgent(a) {
+    a.model.current = () => selected
+    a.options = { provider: 'old', model: 'options' }
+    a.session.requestHeader = () => ({ config: { provider: 'old', model: 'header' } })
+    a.ctx.on('system-prompt/assemble', async (_assembly, _context, next) => ({ ...await next(), variables: { provider: 'old', model: 'assembled' } }))
+  }, llm: jsonModel(request => {
+    calls.push(request.model)
+    return request.maxTokens === 1200 ? { semanticHits: [] } : { confidence: 0.9, reason: '现代宿主', memory: extractedMemory() }
+  }) })
+  const a = await h.agent(), s = h.services.find(value => value.state().runtime.connected)
+  s.createMemory({ content: '检索候选', source: { type: 'user', sessionId: a.session.id } })
+  await h.ctx.systemPrompt.assemble({ scope: a, agent: a })
+  await h.preStep(a, 1, [message('u1', '检索候选')])
+  await h.ctx.waterfall(scopeTarget(a, a), 'agent/pre-step', { agent: a, turn: 2, step: 1, messages: [message('u2', '检索候选')], signal: new AbortController().signal, modelSelection: { provider: 'modern', model: 'step-snapshot' } }, async () => ({ kind: 'enter', messages: [] }))
+  h.emit(a, 'turn/start', { turn: 3 })
+  h.emit(a, 'user/message', message('u3', '现代模型提炼'))
+  h.emit(a, 'turn/end', { turn: 3, reason: { kind: 'completed' } })
+  await settle()
+  selected = undefined
+  await h.preStep(a, 4, [message('u4', '检索候选')])
+  assert.deepEqual(calls, ['current', 'step-snapshot', 'current'])
 })
 
 test('semantic query validation rejects invented IDs and handles date bounds with usage on failure', async () => {

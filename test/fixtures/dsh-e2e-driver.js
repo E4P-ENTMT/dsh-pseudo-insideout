@@ -2,11 +2,15 @@
 import { createHash, randomUUID, timingSafeEqual } from 'node:crypto'
 import { join } from 'node:path'
 import { createUserMessage } from '@deepseek-ai/dsh-llm'
-import { NativeToolExecutor } from '@deepseek-ai/dsh-tool-executor-native'
 
 export const name = 'insideout-synthetic-driver'
 export const inject = ['agents', 'webServer', 'tools', 'sessions', 'sessionQuery']
-export function apply(ctx, config) {
+export async function apply(ctx, config) {
+  // 0.2.1 executes native calls inside ToolsService; 0.2.2 moved that code
+  // into a separate executor package. Load it only for that host API.
+  const NativeToolExecutor = typeof ctx.tools.setExecutor === 'function'
+    ? (await import('@deepseek-ai/dsh-tool-executor-native')).NativeToolExecutor
+    : null
   const handles = new Map(), events = new Map()
   const token = Buffer.from(config.token)
   ctx.on('session/event', (session, event) => {
@@ -18,7 +22,10 @@ export function apply(ctx, config) {
   })
   ctx.effect(() => async () => { await Promise.allSettled([...handles.values()].map(handle => handle.dispose())) })
   const ensureAgent = async (sessionId, space) => {
-    if (!handles.has(sessionId)) handles.set(sessionId, await ctx.agents.create({ sessionId, meta: { cwd: space === 'secondary' ? join(config.workspace, 'secondary') : config.workspace }, agentOptions: { provider: 'insideout-synthetic', model: 'insideout-test-model', maxTokens: 2000 }, setup(agentCtx) { agentCtx.tools.setExecutor(new NativeToolExecutor(agentCtx)) } }))
+    if (!handles.has(sessionId)) handles.set(sessionId, await ctx.agents.create({ sessionId, meta: { cwd: space === 'secondary' ? join(config.workspace, 'secondary') : config.workspace }, agentOptions: { provider: 'insideout-synthetic', model: 'insideout-test-model', maxTokens: 2000 }, setup(agentCtx) {
+      if (NativeToolExecutor) agentCtx.tools.setExecutor(new NativeToolExecutor(agentCtx))
+      else agentCtx.tools.presentAs('native')
+    } }))
     return handles.get(sessionId).agent
   }
   const handler = async (req, res) => {

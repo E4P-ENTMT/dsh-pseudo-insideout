@@ -26,6 +26,24 @@ const LOOPBACK = new Set(['127.0.0.1', '::1', '::ffff:127.0.0.1'])
 function fingerprint(value) {
   return createHash('sha256').update(JSON.stringify(value)).digest('hex').slice(0, 32)
 }
+function modelRoute(value) {
+  if (typeof value?.provider !== 'string' || !value.provider || typeof value?.model !== 'string' || !value.model) return undefined
+  return { provider: value.provider, model: value.model }
+}
+function selectedModel(agent, legacyRoute) {
+  // New hosts own a live selection API. An empty selection must not revive an
+  // older route; legacy routes are used only when that API does not exist.
+  return modelRoute(typeof agent.model?.current === 'function' ? agent.model.current() : legacyRoute)
+}
+function legacyModelRoute(agent) {
+  const configured = modelRoute(agent.options)
+  const previous = modelRoute(agent.session.requestHeader?.()?.config)
+  // A resumed 0.2.1 agent can have a historical header and new options. Without
+  // assembly selection variables there is no public authoritative current route;
+  // skip auxiliary recall until the host records a matching request.
+  if (previous && (!configured || previous.provider !== configured.provider || previous.model !== configured.model)) return undefined
+  return configured
+}
 function logError(ctx, stage) {
   // Do not send provider failures, original messages, local paths or tokens to logs.
   ctx.logger?.warn?.(`pseudo-insideout: ${stage} failed; original data retained`)
@@ -504,6 +522,21 @@ export async function apply(ctx, config = {}) {
         return entry.service.peekContext?.({ sessionId: agent.session.id, turnId: String(state.turn) })?.text || ''
       },
     }))
+    if (typeof agent.model?.current !== 'function') {
+      state.off.push(agent.ctx.on('system-prompt/assemble', async (_assembly, context, next) => {
+        if (context.agent !== agent) return next()
+        state.assembledModel = undefined
+        // 0.2.1 assembles before pre-step. Wrap selection listeners so their
+        // final variables include a just-switched model, not the prior turn's
+        // request header. Never assemble again from inside pre-step.
+        const assembly = await next()
+        const variables = assembly.variables || {}
+        const hasSelection = Object.hasOwn(variables, 'provider') || Object.hasOwn(variables, 'model')
+        state.assembledModel = hasSelection ? modelRoute(variables)
+          : legacyModelRoute(agent)
+        return assembly
+      }, { prepend: true }))
+    }
     state.off.push(agent.ctx.on('agent/pre-step', async (payload, next) => {
       if (disposed || payload.agent !== agent) return next()
       selectedScopeId = scopeId
@@ -522,7 +555,7 @@ export async function apply(ctx, config = {}) {
           let plan
           if (entry.service.memoryEnabled(agent.session.id) && cfg.semanticEnabled && query.trim()) {
             try {
-              plan = await planRecall(ctx.get('llm'), payload.modelSelection || agent.model?.current?.(), { sessionId: agent.session.id, turnId, query, now: entry.service.now(), timeZone: cfg.timeZone, context: entry.service.analysisContext({ sessionId: agent.session.id, limit: 30, maxChars: 16000 }) }, AbortSignal.any([lifecycle.signal, state.lifecycle.signal, state.policyAbort.signal, ...(payload.signal ? [payload.signal] : [])]), { onUsage: usage => entry.service.recordModelUsage(usage) })
+              plan = await planRecall(ctx.get('llm'), payload.modelSelection || selectedModel(agent, state.assembledModel), { sessionId: agent.session.id, turnId, query, now: entry.service.now(), timeZone: cfg.timeZone, context: entry.service.analysisContext({ sessionId: agent.session.id, limit: 30, maxChars: 16000 }) }, AbortSignal.any([lifecycle.signal, state.lifecycle.signal, state.policyAbort.signal, ...(payload.signal ? [payload.signal] : [])]), { onUsage: usage => entry.service.recordModelUsage(usage) })
             } catch { logError(ctx, 'semantic recall') }
           }
           return plan
@@ -563,6 +596,7 @@ export async function apply(ctx, config = {}) {
     } else if (event.type === 'turn/start') {
       syncPolicy(state)
       state.openTurn = data.turn
+      state.assembledModel = undefined
       state.messages.clear()
       state.replies = []
       state.turnBlocked = state.blockedTurns.has(data.turn) || !services.get(state.scopeId).service.memoryEnabled(session.id)
@@ -583,7 +617,7 @@ export async function apply(ctx, config = {}) {
       state.captureAllowed = false
       if (!captureAllowed || data.reason?.kind !== 'completed' || !record.userText.trim()) return
       const entry = services.get(state.scopeId)
-      const selection = state.agent.model?.current?.()
+      const selection = selectedModel(state.agent, session.requestHeader?.()?.config)
       const task = entry.pending.then(async () => {
         syncPolicy(state)
         const cfg = entry.service.getConfig()

@@ -1,10 +1,21 @@
 # 安装、运行、停用与维护
 
+[文档导航](README.md) · [使用指南](usage.md) · [项目首页](../README.md)
+
 ## 交付与支持范围
 
 `dsh-pseudo-insideout` 是 DSH Cordis bundle，包含真实宿主入口和浏览器半端，不是单独网页套壳。运行时代码使用 Node 内置模块，没有另外的 API 密钥或运行期 npm 依赖；开发测试使用官方 Cordis、DSH SystemPrompt、工具注册器与 NativeToolExecutor 包。
 
-0.0.1 针对 **DSH `0.2.2-alpha.2` 的 Web profile** 编写，要求 **Node `>=24.9.0`**。`package.json` 中 `engines.dsh` 精确锁定这个版本。已用真实 Cordis `4.0.6-alpha.1`、官方 `SystemPrompt`、scope 与工具组件验证注册、提示组装、执行和卸载；也已在隔离目录通过真实 DSH CLI 安装本地 tgz、启动完整 Web 宿主，并连接本机合成 SSE 提供商验证真实会话的捕获、召回、工具调用、用量记录与会话隔离。合成提供商不证明真实供应商的理解质量、费用或网络表现；真实供应商与 DSH Desktop 原生壳尚未验证，详见 [宿主验收记录](host-validation.md)。其他 DSH 版本不在已验证范围内。
+当前包版本为 `0.0.1`，支持 **DSH `0.2.1-rc.1` 至 `0.2.1-rc.5`、`0.2.2-alpha.2` 的 Web profile**，要求 **Node `>=24.9.0`**。`package.json` 中的兼容范围为：
+
+```json
+"engines": {
+  "node": ">=24.9.0",
+  "dsh": ">=0.2.1-rc.1 <=0.2.1-rc.5 || 0.2.2-alpha.2"
+}
+```
+
+预发布版本分别验证后才纳入范围；更早版本、后续 RC/alpha 与未来正式版不会自动获得兼容声明。开发测试组件仍固定在 `0.2.2-alpha.2`，各宿主版本的安装、捕获、召回、工具执行、用量和历史导入另用对应官方 runtime 验证，见[宿主版本矩阵](host-validation.md#宿主版本矩阵2026-10-31)及[当前交付报告](08-delivery-report.md)。合成提供商不证明真实供应商的理解质量、费用或网络表现；真实供应商、DSH Desktop 原生壳与跨平台尚未验证，浏览器外观验证仍以历史记录为准。
 
 ## 安装本地包
 
@@ -15,7 +26,7 @@ dsh --version
 node --version
 ```
 
-将交付的 `dsh-pseudo-insideout-0.0.1.tgz` 安装进现有的 Web profile。升级前按下文备份整个记忆空间；新增开关与导入能力见 [1.2 会话记忆策略](11-session-policy-import.md)。以下 `YOUR_WEB_PROFILE` 替换为自己的 profile 名，包路径使用实际绝对路径：
+将本地 `dsh-pseudo-insideout-0.0.1.tgz` 安装进现有的 Web profile；尚无安装包时，先按下文[从源码验证与打包](#从源码验证与打包)生成。升级前按下文备份整个记忆空间；新增开关与导入能力见 [会话记忆策略](11-session-policy-import.md)。以下 `YOUR_WEB_PROFILE` 替换为自己的 profile 名，包路径使用实际绝对路径：
 
 ```sh
 dsh plugin --profile YOUR_WEB_PROFILE add /absolute/path/dsh-pseudo-insideout-0.0.1.tgz
@@ -51,7 +62,7 @@ npm pack
 npm start
 ```
 
-预览入口输出的本机地址是控制台与核心的演示运行，不表示已经连接 DSH。预览数据与 DSH 数据独立，runtime 明确显示 standalone/未连接。
+预览入口输出的本机地址是控制台与核心的演示运行，不表示已经连接 DSH。预览数据与 DSH 数据独立，runtime 明确显示 standalone/未连接。默认入口为 `http://127.0.0.1:3088/pseudo-insideout/`，数据目录为 `.insideout-dev/`，不预置示例。带合成数据的演示命令见[项目首页](../README.md#独立预览控制台)。
 
 ## 宿主选项
 
@@ -99,6 +110,7 @@ npm start
 
 ```text
 $DSH_HOME/pseudo-insideout/<profile-hash>/
+  memory-default.sqlite              # profile 默认开关与版本，无会话正文
   scopes.json                        # 无原文的空间目录
   <workspace-and-agent-hash>/
     active/insideout.sqlite           # 活跃记忆与状态
@@ -143,15 +155,29 @@ dsh plugin --profile YOUR_WEB_PROFILE remove dsh-pseudo-insideout
 
 这些步骤用于目标机器的完整宿主验收；本地测试报告不替代真实 DSH 应用验收。
 
-## 显式一致备份工具
+## 备份与恢复
 
-使用交付的 `node scripts/backup.js create --from <单个数据根> --to <全新备份目录>`，可在双库事务锁下生成一致快照；restore命令同样要求新目标，校验SHA-256和数据库完整性并清除调阅授权。完整用法见README。此方法与上面的停机整目录复制二选一。
+### 单个记忆空间
 
+在仓库或解压后的安装包根目录执行，`--from` 指向包含 `active/` 和 `archive/` 的单个空间数据根：
 
-## 1.2 开关、导入与升级
+```sh
+node scripts/backup.js create --from /absolute/data-root --to /absolute/new-backup
+node scripts/backup.js restore --from /absolute/new-backup --to /absolute/new-data-root
+```
 
-全局默认适用于同一DSH profile中所有记忆空间；会话工作台可选择继承、单独开启或单独关闭。旧版空间enabled保留为硬暂停，会话开启不能绕过它。关闭保留旧记录，同时停止该会话的新捕获、上下文、记忆工具和辅助模型；中途重开从下一完整回合恢复。显式导入及控制台管理仍可使用。
+目标目录必须不存在。创建备份时在同一事务锁下复制活跃库和已有封存库，生成 SHA-256 清单；恢复时检查哈希、SQLite 完整性及 schema，并清除旧临时调阅授权和近期召回状态。会话覆盖与长期显式导入授权保留。将恢复目录接回 DSH 前先停止对应插件，并保留原目录供核对；不要在宿主运行时单独复制一个数据库。
 
-记忆大厅支持导入已有活跃记录、DSH历史和用户选择的JSON/TXT/Markdown文件。先指定目标会话，预览并选择后提交。文件上限512KiB、每批200条；导入不改变会话开关、不调用模型，文件内容是未经核验的外部参考。已有记录保留ID与来源，通过会话授权共享；源修订/封存/删除撤销授权。DSH历史通过宿主公共只读接口查询，限制当前工作区与角色，不恢复或修改源会话。目录来自当前宿主可见会话，不保证按profile分隔。
+此脚本只备份一个空间，**不包含 profile 根的 `memory-default.sqlite` 和 `scopes.json`**，不能代替完整 profile 迁移。
 
-升级保留schema 1，按需添加授权表和JSON字段；旧记录无需重建。全局默认首次为开启，现有空间硬暂停仍有效。DSH profile数据根新增memory-default.sqlite，各空间覆盖/授权在active库。备份脚本继续备份单空间双库，保留会话覆盖和长期显式导入授权，恢复只清除旧临时调阅授权；它不备份profile根默认库。整体迁移需停用宿主并保留完整profile数据根（含默认库与scopes.json）。
+### 整个 profile 迁移或升级前备份
+
+停止对应宿主后，复制完整的插件 profile 数据根，即上方路径中的 `<profile-hash>/` 目录，保留默认开关库、空间目录及所有空间的活跃库和封存库。自定义 `dataDir` 时以实际路径为准。备份含记忆原文，应作为私人资料保管。
+
+数据库与全文索引均启用安全删除选项，避免已封存内容留在当前活跃索引页；这不等同于对 SSD、文件系统快照或系统备份作取证级擦除。
+
+## 会话策略与数据兼容
+
+全局默认适用于同一 DSH profile 的所有记忆空间。会话工作台提供继承、单独开启或单独关闭，空间 `enabled` 始终是硬暂停。关闭保留旧记录并停止自动捕获、上下文、记忆工具和辅助模型；控制台管理与显式导入仍可使用。操作说明见[使用指南](usage.md)，接口与竞态约束见[会话策略与导入](11-session-policy-import.md)。
+
+当前 SQLite schema 为 `1`，开关与导入通过添加授权表及 JSON 字段扩展，旧记录无需重建。全局默认首次为开启，现有空间硬暂停仍有效。DSH 的默认开关保存在 profile 根，各空间的覆盖与授权保存在活跃库；独立控制台的默认值也保存在自己的活跃库中。
