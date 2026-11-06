@@ -89,7 +89,8 @@ kind = episode/fact/preference/commitment/reflection；source.type = user/observ
  "minConfidence":0.7,"emotionHalfLifeHours":3,
  "persona":"","identity":"","quietHours":{"start":22,"end":8},
  "proactiveEnabled":false,"proactiveIntervalHours":24,
- "timeZone":"Asia/Shanghai","semanticEnabled":true
+ "timeZone":"Asia/Shanghai","semanticEnabled":true,"modelEnabled":true,
+ "captureVisibility":"workspace"
 }
 ```
 
@@ -141,6 +142,7 @@ Dream 的 preview 保存 before/after；模型候选保存全部背景依赖版�
 | API | 主要输入 | 返回/约束 |
 |---|---|---|
 | GET/PATCH /memory-default | PATCH带expectedVersion、enabled | version/enabled/scope/updatedAt；DSH同profile所有空间共享，独立控制台只作用于本数据目录 |
+| GET/PATCH /memory-sharing | PATCH带expectedVersion、enabled | 同profile的全局记忆开关；默认false，独立版本；返回version/enabled/scope/updatedAt |
 | GET/PATCH /session-memory | sessionId；PATCH另带expectedVersion、override | override为inherit/on/off；含defaultEnabled、scopeEnabled、effectiveEnabled、reason、stamp |
 | GET /imports/sessions | source=memories或dsh、q、offset、limit≤100 | available、items、total；来源不可用明确说明；DSH当前工作区/角色筛选 |
 | POST /imports/preview | source、targetSessionId；来源会话ID、memoryIds或file三选一；offset、limit≤200 | previewId、expiresAt、items、total、hasMore、targetPolicy、sourceInfo；记录含ready/already/blocked及完整dependencies |
@@ -151,3 +153,23 @@ file={name,format,content}；format=json/txt/md，UTF-8内容≤512KiB，只接�
 预览仅驻留进程内存10分钟，最多保留10批；分页后每批单独确认。提交在事务写入前重验所选记录及披露依赖的完整版本；来源无关新记录不进入已选快照。任何所选来源变更整批409，未知/过期预览要求重建。重复提交幂等；封存和删除的来源墓碑阻止复活。已有记忆只新增import_access引用授权，保留原来源、ID、版本及私有级别；来源变更撤销授权。DSH读取仅走公共只读API，不恢复或修改源会话。文件/DSH导入均不改变策略、情绪或人格。
 
 全局默认存profile根memory-default.sqlite；会话覆盖存active.settings，长期显式授权存active.import_access。关闭不是删除，所有自动入口重验effective状态及策略版本。源记录生命周期沿用现有依赖失效规则；预览不写操作日志，提交日志只含ID、来源类别和计数。
+
+## 2026-11 兼容修订
+
+普通记忆 PATCH 接受布尔 `fictional`，沿用 `expectedVersion` 和修订原因，旧标记写入 `revisions`，范围与派生证据失效规则不变。解码边界校验必需字段、嵌套证据数组、日期、来源、情绪、版本与存储层级；损坏记录保留原始字节并从正常读取中隔离。
+
+配置 `modelEnabled` 默认 true，是当前空间全部辅助模型调用的总开关；其独立版本用于取消和拒绝迟到结果，不更改会话记忆策略，不丢弃已完成回合原话。
+
+## 跨会话自动记忆（2026-11-06）
+
+`captureVisibility` 是空间级配置，接受 `workspace`（默认）或 `session`，由 `PATCH /config` 更新。它控制之后的自动捕获；使用私有分析背景的记录保持 session。修改范围递增 scopePolicyVersion，使进行中的旧策略调用和捕获失效。手动创建、导入和各记录显式 visibility 规则不变。
+
+旧库缺少该配置时，在仅访问 active 库的一次事务中迁移可由捕获日志或去重键核对、未修订且未添加解释、无私有依赖的活跃自动记录；原文、来源、ID 与日期保留，visibility 变为 workspace，version 递增并记录 system 修订。只更新仍与旧源匹配的活跃证据版本和指纹，不修复已过期证明。完成后设置 captureScopeMigration=1，重复启动不会覆盖用户之后的私有设置；失败整批回滚。
+
+## 可选全局记忆（2026-11-06）
+
+`memory-sharing` 与默认会话开关互相独立；`enabled` 必须为布尔值，陈旧 `expectedVersion` 返回409。`GET /state` 含 `memorySharing`。配置存于 profile 根 `memory-default.sqlite` 的 `memory_sharing` 表；独立模式存于自己的 settings，不访问其他目录。
+
+全局召回项的临时 ID 为 `global:<scopeId>:<memoryId>`，附 `globalOrigin:{scopeId,memoryId,workspaceId,agentId}`。只从同 profile 已注册空间读取活跃 workspace 记录，验证来源空间、来源会话和完整证据闭包；不授予目标会话额外私有访问权，不从任意路径定位来源。管理接口继续使用原空间与原 ID，跨空间别名不能用于修改记录。
+
+关闭开关、源变更或源停用后，缓存和语义候选重验；策略版本变化取消进行中的旧调用，同回合重新开启也不恢复。正文及特征不写入目标库，召回日志只留 ID、来源与无正文理由。角色配置、人格岛、情绪、工作状态及辅助提炼背景保持本空间边界。已写入 DSH 历史的内容不撤回。

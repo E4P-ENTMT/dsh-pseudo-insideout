@@ -11,6 +11,9 @@
 | [项目首页](../README.md) | 功能概览、支持环境、打包安装与独立预览 |
 | [使用指南](usage.md) | 第一次对话、开关、导入、档案操作、成长功能与常见情况 |
 | [安装维护](06-installation.md) | 宿主配置、辅助模型、数据路径、升级卸载与备份恢复 |
+| [简明安装指南](../INSTALL.md) | Release 下载、Desktop／Web 安装地址与校验命令 |
+| [更新记录](../CHANGELOG.md) | GitHub 发布版本的功能和修复 |
+| [发布维护](releasing.md) | 打包、CI、Tag 与 GitHub Release 工作流 |
 
 ## 实现与设计
 
@@ -39,6 +42,7 @@
 | [08 · 当前交付验收](08-delivery-report.md) | `0.0.1` 交付记录及未重新执行的项目 |
 | [05 · 验收计划与追踪](05-acceptance.md) | 测试案例、需求映射及各开发阶段执行结果 |
 | [宿主验收](host-validation.md) | 官方组件、隔离 Web 宿主与本机合成模型验证 |
+| [桌面版验收](desktop-validation.md) | macOS Desktop 的真实模型往返、原生界面与同进程接口检查 |
 | [浏览器验收](ui-validation.md) | 控制台实际操作及未覆盖的界面边界 |
 | 历史交付报告 | [1.0.0](history/08-delivery-1.0.0.md)、[1.1.0](history/08-delivery-1.1.0.md)、[1.2.0](history/08-delivery-1.2.0.md) |
 

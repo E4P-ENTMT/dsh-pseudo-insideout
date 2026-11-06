@@ -6,18 +6,28 @@
 
 `dsh-pseudo-insideout` 是 DSH Cordis bundle，包含真实宿主入口和浏览器半端，不是单独网页套壳。运行时代码使用 Node 内置模块，没有另外的 API 密钥或运行期 npm 依赖；开发测试使用官方 Cordis、DSH SystemPrompt、工具注册器与 NativeToolExecutor 包。
 
-当前包版本为 `0.0.1`，支持 **DSH `0.2.1-rc.1` 至 `0.2.1-rc.5`、`0.2.2-alpha.2` 的 Web profile**，要求 **Node `>=24.9.0`**。`package.json` 中的兼容范围为：
+当前包版本为 `0.0.1`，支持 **DSH `0.2.1-rc.1` 至 `0.2.1-rc.5`、`0.2.2-alpha.2`、`0.2.2-alpha.3`、`0.2.2-rc.1` 的 Web profile**，要求 **Node `>=24.9.0`**。`package.json` 中的兼容范围为：
 
 ```json
 "engines": {
   "node": ">=24.9.0",
-  "dsh": ">=0.2.1-rc.1 <=0.2.1-rc.5 || 0.2.2-alpha.2"
+  "dsh": ">=0.2.1-rc.1 <=0.2.1-rc.5 || 0.2.2-alpha.2 || 0.2.2-alpha.3 || 0.2.2-rc.1"
 }
 ```
 
-预发布版本分别验证后才纳入范围；更早版本、后续 RC/alpha 与未来正式版不会自动获得兼容声明。开发测试组件仍固定在 `0.2.2-alpha.2`，各宿主版本的安装、捕获、召回、工具执行、用量和历史导入另用对应官方 runtime 验证，见[宿主版本矩阵](host-validation.md#宿主版本矩阵2026-10-31)及[当前交付报告](08-delivery-report.md)。合成提供商不证明真实供应商的理解质量、费用或网络表现；真实供应商、DSH Desktop 原生壳与跨平台尚未验证，浏览器外观验证仍以历史记录为准。
+预发布版本分别验证后才纳入范围；更早版本、后续 RC/alpha 与未来正式版不会自动获得兼容声明。开发测试组件仍固定在 `0.2.2-alpha.2`，各宿主版本的安装、捕获、召回、工具执行、用量和历史导入另用对应官方 runtime 验证，见[宿主版本矩阵](host-validation.md#宿主版本矩阵2026-11-05)及[当前交付报告](08-delivery-report.md)。macOS arm64 的 Desktop `0.2.2-rc.1` 另完成真实 DeepSeek 模型基础往返，见[桌面版验收](desktop-validation.md)；这不代表供应商质量、计费或网络故障的系统评测，也不扩大到其他桌面版本与操作系统。
 
-## 安装本地包
+## 获取安装包
+
+直接从 [GitHub Release v0.0.1](https://github.com/E4P-ENTMT/dsh-pseudo-insideout/releases/tag/v0.0.1) 下载 `dsh-pseudo-insideout-0.0.1.tgz`，或将下方完整地址填入 DSH 插件安装器：
+
+```text
+https://github.com/E4P-ENTMT/dsh-pseudo-insideout/releases/download/v0.0.1/dsh-pseudo-insideout-0.0.1.tgz
+```
+
+安装无需解压、编译或安装开发依赖。Release 同时提供 `INSTALL.md` 和 `SHA256SUMS`；核对方法见[简明安装指南](../INSTALL.md)。GitHub 自动生成的 Source code 压缩包是源码快照，安装请选择专门的 `.tgz` 附件。当前未发布到 npm，不能只填写裸包名安装。
+
+## 安装到 Web profile
 
 先在 DSH 所用终端确认版本：
 
@@ -26,10 +36,10 @@ dsh --version
 node --version
 ```
 
-将本地 `dsh-pseudo-insideout-0.0.1.tgz` 安装进现有的 Web profile；尚无安装包时，先按下文[从源码验证与打包](#从源码验证与打包)生成。升级前按下文备份整个记忆空间；新增开关与导入能力见 [会话记忆策略](11-session-policy-import.md)。以下 `YOUR_WEB_PROFILE` 替换为自己的 profile 名，包路径使用实际绝对路径：
+将安装包 URL 或已下载文件的绝对路径填入命令。升级前按下文备份整个 profile 的插件数据；新增开关与导入能力见 [会话记忆策略](11-session-policy-import.md)。以下 `YOUR_WEB_PROFILE` 替换为自己的 profile 名：
 
 ```sh
-dsh plugin --profile YOUR_WEB_PROFILE add /absolute/path/dsh-pseudo-insideout-0.0.1.tgz
+dsh plugin --profile YOUR_WEB_PROFILE add https://github.com/E4P-ENTMT/dsh-pseudo-insideout/releases/download/v0.0.1/dsh-pseudo-insideout-0.0.1.tgz
 dsh --profile YOUR_WEB_PROFILE --dump-config
 ```
 
@@ -39,9 +49,13 @@ dsh --profile YOUR_WEB_PROFILE --dump-config
 dsh --profile YOUR_WEB_PROFILE
 ```
 
-在 DSH 设置中选择 **“记忆总部 · Pseudo Inside Out”**，或在同一个本机 DSH 地址下打开 `/pseudo-insideout/`。首次没有会话时显示未连接；创建/打开根会话后，控制台会出现对应记忆空间。插件停用再启用不删除数据库。
+点击 DSH 主窗口左侧栏的 **“记忆总部”**，在主内容区直接打开控制台。也可在设置中选择 **“记忆总部 · Pseudo Inside Out”**，或在同一个本机 DSH 地址下打开 `/pseudo-insideout/`。首次没有会话时显示未连接；创建/打开根会话后，控制台会出现对应记忆空间。插件停用再启用不删除数据库。
 
 本机访问只接受 `localhost`、`127.0.0.1` 或 `[::1]` 的 Host 与 loopback socket。自定义域名、代理出口、局域网和远程连接会被拒绝；不要通过修改成 `0.0.0.0` 来开放控制台。
+
+### Desktop 安装
+
+在已验证的 macOS Desktop `0.2.2-rc.1` 中，打开「插件」→「添加插件」，填写上方 Release `.tgz` 地址，或本地安装包的绝对路径并安装，随后启用 `dsh-pseudo-insideout`。安装后主侧栏出现「记忆总部」；更新插件后按宿主提示刷新界面。桌面版通过自身的 `dsh-app://app/` 页面访问同一个本机宿主，不需要另外启动独立预览服务。
 
 ## 从源码验证与打包
 
@@ -55,6 +69,8 @@ npm pack
 ```
 
 代码已是 ESM JavaScript，客户端工厂已经写成 DSH 支持的格式，不依赖 git 安装后执行 `prepare`。`npm pack` 的包内不包含 `node_modules`、测试数据库或用户记忆。
+
+需要完整发布附件时运行 `npm run release:pack`，结果保存在 `output/release/`。Tag 与 Release 的维护方式见[发布流程](releasing.md)。
 
 独立预览可使用：
 
@@ -85,14 +101,13 @@ npm start
 
 ### 辅助模型调用与关闭方式
 
-`semanticEnabled` 是控制台“允许受控语义检索”开关，默认 `true`。轮前有用户问题和活跃可见候选时，每个会话每轮最多调用一次宿主模型，输出上限 **1200 token**，等待预算 **5 秒**；失败回退到本地检索。候选最多 30 条、候选序列化预算 16000 字符；封存记录和其他会话的私有记录不进入该候选集。每步实际注入仍受当前会话、版本、日期、实体和上下文预算校验。只读 `insideout_search_memory` 工具自身执行本地检索，不额外调用模型，也不使用临时档案授权。
+`semanticEnabled` 是控制台“允许受控语义检索”开关，默认 `true`。轮前有用户问题和可见活跃候选时（空库不发起此类辅助请求），每个会话每轮最多调用一次宿主模型，输出上限 **1200 token**，等待预算 **5 秒**；失败回退到本地检索。候选最多 30 条、候选序列化预算 16000 字符；封存记录和其他会话的私有记录不进入该候选集。每步实际注入仍受当前会话、版本、日期、实体和上下文预算校验。只读 `insideout_search_memory` 工具自身执行本地检索，不额外调用模型，也不使用临时档案授权。
 
-**`analyzeTurns:false` 不会关闭 `semanticEnabled:true` 的轮前调用。**若要保留本地记忆功能并关闭插件的全部额外模型调用，需要同时：
+在控制台「运行设置」关闭 **允许辅助模型调用**，保存即可让当前记忆空间的 `modelEnabled:false` 生效，无需修改宿主 YAML 或重启。它会取消正在进行的辅助请求并丢弃迟到结果；保留本地原话捕获、有限概念检索和手动管理。该设置按空间保存，新空间默认开启；其他空间需分别设置。
 
-1. 在宿主 `cordis.patch.yml` 中把 `analyzeTurns` 设为 `false`，并保留同一 `config` 中需要的其他选项。
-2. 在每个相关记忆空间的控制台关闭“允许受控语义检索”（`semanticEnabled:false`）。新建空间默认仍为开启，需要另行设置。
+`modelEnabled` 是两类辅助调用的总开关。总开关开启后，`analyzeTurns:false` 仍可单独关闭回合后提炼，`semanticEnabled:false` 可关闭轮前语义规划与本地概念扩展。仅关闭情绪不关闭记忆提炼。这些开关只控制插件的辅助能力，不关闭 DSH 正常对话所使用的主模型。
 
-这两个开关只控制本插件的辅助调用，不关闭 DSH 正常对话所使用的主模型。两类辅助调用使用会话当前模型和宿主凭据，可能产生额外费用；用量只展示提供商实际返回的 token 计数，不估算货币成本。输入合计包括未缓存输入、缓存读取和缓存写入；提供商未返回的字段不按零补齐。
+两类辅助调用使用会话当前模型和宿主凭据，可能产生额外费用；用量只展示提供商实际返回的 token 计数，不估算货币成本。输入合计包括未缓存输入、缓存读取和缓存写入；提供商未返回的字段不按零补齐。
 
 辅助提炼只发送本轮用户原话和预算内的活跃背景。助手回复保存在原始回合记录中，不再传入辅助分析；人格岛只传标识、版本、归属和证据 ID。全部背景正文附真实版本，来源修订、封存或移除后不能继续沿用旧推断。
 
@@ -110,14 +125,14 @@ npm start
 
 ```text
 $DSH_HOME/pseudo-insideout/<profile-hash>/
-  memory-default.sqlite              # profile 默认开关与版本，无会话正文
+  memory-default.sqlite              # profile 默认会话开关、全局共享开关与各自版本，无会话正文
   scopes.json                        # 无原文的空间目录
   <workspace-and-agent-hash>/
     active/insideout.sqlite           # 活跃记忆与状态
     archive/insideout.sqlite          # 独立封存原文
 ```
 
-`DSH_HOME` 未设置时通常为 `~/.dsh`；正常 profile 以宿主提供的 home 为准。工作空间来自 `session.header.cwd`，角色来自 `agentPreset`。同一空间内部默认按 session 隔离，明确标记 workspace 共享的记忆才进入其他会话的候选范围。子 agent 不捕获。
+`DSH_HOME` 未设置时通常为 `~/.dsh`；正常 profile 以宿主提供的 home 为准。工作空间来自 `session.header.cwd`，角色来自 `agentPreset`。自动记忆默认以 `workspace` 范围跨会话使用；配置 `captureVisibility:session` 可使之后的自动记录仅对来源会话可见。手动私有记录、导入和依赖私有背景的提炼不自动共享。不同 profile 始终隔离；工作区和角色默认隔离，可在「总部」或「运行与设置」开启「全局记忆」，让同 profile 的共享活跃记录跨空间召回，正文仍保存在原目录。子 agent 不捕获。
 
 `scopes.json` 只保存安全 hash 与工作区/角色元数据，用于重启后浏览已有空间；API 不接受任意磁盘路径，不通过用户提供的 cwd 选择数据库。没有活跃会话时的 unbound 空间独立，内容不会自行搬进真实会话。
 
@@ -181,3 +196,5 @@ node scripts/backup.js restore --from /absolute/new-backup --to /absolute/new-da
 全局默认适用于同一 DSH profile 的所有记忆空间。会话工作台提供继承、单独开启或单独关闭，空间 `enabled` 始终是硬暂停。关闭保留旧记录并停止自动捕获、上下文、记忆工具和辅助模型；控制台管理与显式导入仍可使用。操作说明见[使用指南](usage.md)，接口与竞态约束见[会话策略与导入](11-session-policy-import.md)。
 
 当前 SQLite schema 为 `1`，开关与导入通过添加授权表及 JSON 字段扩展，旧记录无需重建。全局默认首次为开启，现有空间硬暂停仍有效。DSH 的默认开关保存在 profile 根，各空间的覆盖与授权保存在活跃库；独立控制台的默认值也保存在自己的活跃库中。
+
+跨会话修复新增空间配置 `captureVisibility`（`workspace` / `session`，默认 `workspace`）。旧库首次加载时会迁移未修订且无私有证据依赖的活跃自动记忆，保留原 ID、原文和来源，记录系统修订；事务完成后保存一次性迁移标记。不读取或修改封存库，不扩大手动私有记录或导入记录的范围，也不复活已删除记录。已明确保存 `captureVisibility` 的空间尊重该设置，不执行旧默认迁移。操作与完整边界见[跨会话记忆](usage.md#跨会话记忆)。

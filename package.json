@@ -4,6 +4,14 @@
   "description": "DSH 记忆与状态插件：独立封存、情绪、人格岛与可视化控制台。",
   "type": "module",
   "license": "MIT",
+  "homepage": "https://github.com/E4P-ENTMT/dsh-pseudo-insideout#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/E4P-ENTMT/dsh-pseudo-insideout.git"
+  },
+  "bugs": {
+    "url": "https://github.com/E4P-ENTMT/dsh-pseudo-insideout/issues"
+  },
   "main": "./src/dsh/host.js",
   "exports": {
     ".": "./src/dsh/host.js",
@@ -19,11 +27,13 @@
     "scripts",
     "cordis.patch.yml",
     "README.md",
+    "INSTALL.md",
+    "CHANGELOG.md",
     "LICENSE"
   ],
   "engines": {
     "node": ">=24.9.0",
-    "dsh": ">=0.2.1-rc.1 <=0.2.1-rc.5 || 0.2.2-alpha.2"
+    "dsh": ">=0.2.1-rc.1 <=0.2.1-rc.5 || 0.2.2-alpha.2 || 0.2.2-alpha.3 || 0.2.2-rc.1"
   },
   "dsh": {
     "bundle": {
@@ -32,6 +42,8 @@
     "client": {
       "platform": "web",
       "inject": [
+        "@deepseek-ai/dsh-client-ui-layout",
+        "@deepseek-ai/dsh-client-ui-sidebar",
         "@deepseek-ai/dsh-client-ui-settings"
       ]
     }
@@ -39,7 +51,8 @@
   "scripts": {
     "test": "node --test test/*.test.js",
     "start": "node scripts/serve.js",
-    "pack:check": "npm pack --dry-run"
+    "pack:check": "npm pack --dry-run",
+    "release:pack": "node scripts/package-release.mjs"
   },
   "keywords": [
     "deepseek-harness",

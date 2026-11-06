@@ -165,3 +165,26 @@ node test/fixtures/verify-dsh-e2e.mjs \
 将路径与包版本一起替换即可测试表中其他版本。验收器现在从 CLI 读取真实 DSH 版本并记录 Node 版本，驱动器只使用所选 runtime 的组件；默认报告路径为 `output/delivery/<插件版本>/dsh-<宿主版本>/synthetic-host-e2e.json`，也可用 `--output <报告目录>` 指定。省略 `--tarball` 时自动打候选包；指定最终包验收时仍传 `--tarball /absolute/path/final.tgz`。
 
 本次六份报告记录同一候选包 SHA-256，汇总在本地 `output/compatibility/matrix.json`，源码测试日志为 `output/compatibility/tests.log`。验证后补充的文档不在该候选工件内；后续重新打包应以新 SHA-256 区分。报告与 runtime 不随源码或 npm 包分发。浏览器外观、Desktop 原生壳、其他操作系统、真实商业供应商及长期运行没有在本次矩阵中重新验证。
+
+## 宿主版本矩阵（2026-11-05）
+
+本轮修复五项审查问题，并将 `0.2.2-alpha.3`、`0.2.2-rc.1` 加入正式兼容声明。每个版本均使用同一份原始安装包，经官方 `dsh plugin add` 安装；没有修改实验包 manifest 或绕过版本门槛。环境为 macOS arm64、Node.js 26.13.0，各版本使用独立临时 profile、官方 runtime 和本机合成 SSE 提供商。
+
+| DSH Web 版本 | 完整宿主结果 |
+|---|---|
+| `0.2.1-rc.1` | 15/15 通过 |
+| `0.2.1-rc.2` | 15/15 通过 |
+| `0.2.1-rc.3` | 15/15 通过 |
+| `0.2.1-rc.4` | 15/15 通过 |
+| `0.2.1-rc.5` | 15/15 通过 |
+| `0.2.2-alpha.2` | 15/15 通过 |
+| `0.2.2-alpha.3` | 15/15 通过 |
+| `0.2.2-rc.1` | 15/15 通过 |
+
+在原 13 项完整宿主检查上，增加两项：模型改写词实际召回初始候选池之外的低优先记忆；关闭 `modelEnabled` 后两类辅助调用均停止，同时真实回合仍完成、本地召回和原话捕获继续。安装后核对运行文件字节，包含新增 `record-validation.js` 与已有 `dates.js`。
+
+源码全量测试在 Node.js 24.9.0 和 26.13.0 下分别为 **121/121**，包含条件句分类与纠错、结构损坏隔离、索引迁移和外部修改、改写范围/日期约束、模型开关取消竞争和提示组装。兼容范围的 17 个正反边界断言通过；未纳入其他 alpha/RC 和未来正式版。
+
+本地证据位于 `output/fixes-2026-11-05/compatibility-matrix.json`、各 `dsh-<版本>/synthetic-host-e2e.json`、`tests-node24.log`、`tests-node26.log`、`version-range.json`。矩阵记录实际包 SHA-256；报告不随安装包分发，不把历史工件的结果代用于本轮代码。
+
+此处验证 Web 宿主工程链路；本矩阵没有覆盖真实商业模型、Desktop 原生壳、Windows/Linux 与长期生产负载。后续 macOS Desktop `0.2.2-rc.1` 的真实模型基础往返及侧栏入口验证见[桌面版验收](desktop-validation.md)。

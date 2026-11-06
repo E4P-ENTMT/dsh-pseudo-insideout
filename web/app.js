@@ -1,10 +1,14 @@
 /* dsh-pseudo-insideout · zero-build control console */
+import { dateInput, deadlineFromInput } from './dates.js';
+
 (() => {
   'use strict';
 
   const $ = (selector, root = document) => root.querySelector(selector);
   const main = $('#main');
   const modal = $('#modal');
+  const appearance = window.InsideOutAppearance;
+  const appearanceDialog = $('#appearance-dialog');
   const ICONS = {
     home: '<path d="m3 10 9-7 9 7v10a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1Z"/><path d="M9 21v-8h6v8"/>',
     memory: '<circle cx="12" cy="12" r="8"/><circle cx="12" cy="12" r="3"/><path d="M5 5 3 3m16 16 2 2M19 5l2-2M5 19l-2 2"/>',
@@ -65,6 +69,7 @@
     'config.updated': '更新配置', 'island.updated': '编辑人格岛', 'turn.completed': '完成回合',
     'memory.revised': '修订记忆', 'archive.recall-authorized': '授权临时调阅',
     'turn.captured': '捕获对话经历', 'turn.capture-skipped': '跳过新记忆捕获',
+    'memory.capture-scope-migrated': '旧自动记忆迁移为跨会话可用',
     'emotion.updated': '更新情绪状态', 'emotion.analysis-invalid': '拒绝无效情绪分析', 'dream.completed': '完成后台整理',
     'emotion.reset': '重置当前情绪', 'workspace.updated': '更新会话工作台', 'memory.trashed': '移入回收箱', 'memory.untrashed': '从回收箱恢复', 'created': '形成新的人格岛', 'user-edited': '用户修订人格岛', 'user-reverted': '恢复人格历史版本', 'proposal-approved': '批准成长提案',
     'memory.default-updated': '更新默认记忆开关', 'memory.session-policy-updated': '更新会话记忆开关', 'imports.committed': '执行显式导入',
@@ -74,7 +79,7 @@
   let state = null;
   let pageData = {};
   let loadVersion = 0;
-  let view = 'orbs';
+  let view = appearance?.preferences.memoryView || 'orbs';
   let query = '';
   let kindFilter = '';
   let emotionFilter = '';
@@ -95,6 +100,8 @@
   const pageSize = 50;
   let memoryOffset = 0;
   let coreOffset = 0;
+  let homePolicyExpanded = false;
+  let advancedFiltersExpanded = false;
 
   function h(tag, props, ...children) {
     const element = document.createElement(tag);
@@ -153,8 +160,40 @@
     return { '--orb-color': memoryColor(memory), '--orb-mix': stops.length > 1 ? `conic-gradient(from -35deg, ${stops.join(',')})` : `linear-gradient(${memoryColor(memory)},${memoryColor(memory)})` };
   }
   function emotionText(memory) { return emotions.filter(item => clamp(memory.emotions?.[item.id]) > 0).map(item => `${item.label} ${percent(memory.emotions[item.id])}`).join(' · ') || '未标记情绪'; }
-  function dateInput(value) { return value ? String(value).slice(0, 10) : ''; }
   function clearSelection() { selectedMemories = new Map(); }
+
+  function syncAppearance() {
+    if (!appearance) return;
+    const preferences = appearance.preferences;
+    document.querySelectorAll('[data-appearance-setting]').forEach(input => { input.checked = preferences[input.dataset.appearanceSetting] === input.value; });
+    $('#appearance-button').title = `颜色主题与外观 · ${preferences.theme === 'system' ? '跟随系统 · ' : ''}${appearance.resolved.name}`;
+  }
+
+  function appearanceControls() {
+    if (!appearance) return info('外观资源暂不可用，请刷新控制台。', 'warn');
+    const preferences = appearance.preferences, group = `appearance-${++fieldCounter}`;
+    const status = h('p', { class: 'appearance-status', role: 'status' }, '选择后立即生效，外观偏好保存在当前浏览器或桌面窗口。');
+    const choose = patch => {
+      const result = appearance.set(patch);
+      status.textContent = result.saved ? '已保存外观偏好，下次打开时继续使用。' : '已应用外观；当前环境无法保存偏好，下次打开时可能恢复默认。';
+    };
+    const choices = [...appearance.themes, { id: 'system', name: '跟随系统', description: '浅色用晨光白，深色用星云紫', colors: { bg: '#17152b', 'panel-2': '#eee6d8', accent: '#be9b56' } }];
+    const themes = h('fieldset', { class: 'theme-options' }, h('legend', {}, '颜色主题'), h('div', { class: 'theme-grid' }, choices.map(theme =>
+      h('label', { class: 'theme-option', style: { '--preview-bg': theme.colors.bg, '--preview-panel': theme.colors['panel-2'], '--preview-accent': theme.colors.accent } },
+        h('input', { type: 'radio', name: `${group}-theme`, value: theme.id, checked: preferences.theme === theme.id, 'aria-label': theme.name, 'data-appearance-setting': 'theme', onChange: event => { if (event.target.checked) choose({ theme: theme.id }); } }),
+        h('span', { class: `theme-preview ${theme.id === 'system' ? 'system-preview' : ''}`, 'aria-hidden': 'true' }, h('span', { class: 'theme-preview-side' }), h('span', { class: 'theme-preview-main' }, h('span', { class: 'theme-preview-line' }), h('span', { class: 'theme-preview-block' }))), h('strong', {}, theme.name), h('small', {}, theme.description)))));
+    const density = h('fieldset', { class: 'density-options' }, h('legend', {}, '显示密度'), h('div', { class: 'density-choices' }, [['comfortable', '舒适', '更从容的阅读间距'], ['compact', '紧凑', '一屏容纳更多内容']].map(([value, label, hint]) =>
+      h('label', { class: 'density-choice' }, h('input', { type: 'radio', name: `${group}-density`, value, checked: preferences.density === value, 'aria-label': label, 'data-appearance-setting': 'density', onChange: event => { if (event.target.checked) choose({ density: value }); } }), label, h('small', {}, hint)))));
+    return h('div', { class: 'appearance-content' }, h('p', { class: 'appearance-intro' }, '给记忆总部换一种氛围。也可以随时从右上角“主题”打开这里。'), themes, density, status);
+  }
+
+  function openAppearance() {
+    appearanceDialog.replaceChildren(h('div', { class: 'modal-header' }, h('div', {}, h('h2', { id: 'appearance-title' }, '颜色主题与外观'), h('p', { class: 'modal-subtitle' }, '五种配色，总有一种适合此刻。')), h('button', { class: 'icon-button', type: 'button', 'aria-label': '关闭外观设置', onClick: () => appearanceDialog.close() }, icon('close', 17))), appearanceControls());
+    $('.appearance-content', appearanceDialog)?.append(h('div', { class: 'appearance-footer' }, button('完成', () => appearanceDialog.close(), { variant: 'primary' })));
+    appearanceDialog.showModal();
+    appearanceDialog.scrollTop = 0;
+    $('input:checked', appearanceDialog)?.focus({ preventScroll: true });
+  }
 
   async function api(path, options = {}) {
     if (!boot?.token) throw new Error('控制台缺少宿主注入的连接凭据。请从 DSH 插件或本地服务入口打开此页面。');
@@ -233,6 +272,10 @@
       const nextState = await api('/state');
       if (version !== loadVersion) return;
       if (!scopeId && nextState.runtime?.scopeId) scopeId = nextState.runtime.scopeId;
+      if (nextState.scopes?.length && !nextState.scopes.some(scope => scope.id === scopeId)) {
+        changeScope(nextState.scopes[0].id);
+        await loadPage({ silent: true }); return;
+      }
       if (!sessionId) sessionId = nextState.sessions?.[0]?.id || 'manual';
       const filters = { tier: page === 'archive' ? 'archive' : 'active', q: query, ...(kindFilter ? { kind: kindFilter } : {}), ...(emotionFilter ? { emotion: emotionFilter } : {}), ...(entityFilter ? { entity: entityFilter } : {}), ...(fromFilter ? { from: `${fromFilter}T00:00:00+08:00` } : {}), ...(toFilter ? { to: new Date(Date.parse(`${toFilter}T00:00:00+08:00`) + 86_400_000).toISOString() } : {}), ...(page === 'archive' && archiveTab === 'trash' ? { trashed: 'true' } : {}), offset: String(memoryOffset), limit: String(pageSize) };
       const endpoint = page === 'home' ? ['/memories?tier=active&limit=100', '/logs?limit=5', `/workspace?sessionId=${encodeURIComponent(sessionId)}`, `/recalls?sessionId=${encodeURIComponent(sessionId)}`, '/memory-default', `/session-memory?sessionId=${encodeURIComponent(sessionId)}`]
@@ -288,7 +331,7 @@
   function sessionPicker() {
     const listId = `session-list-${++fieldCounter}`;
     const input = h('input', { class: 'input', name: 'session', value: sessionId, list: listId, required: true, maxlength: 200, 'aria-label': '工作台与回应依据的会话 ID' });
-    return h('form', { class: 'session-picker', onSubmit: event => { event.preventDefault(); const value = input.value.trim(); if (!value) return; sessionId = value; if (modal.open) modal.close(); loadPage(); } }, h('label', {}, '会话', input), h('datalist', { id: listId }, (state.sessions || []).map(session => h('option', { value: session.id }, session.id))), button('切换会话', null, { type: 'submit', small: true }), h('span', { class: 'muted' }, '可选择已有会话或填写手动会话 ID；手动工作台不代表已连接 DSH。'));
+    return h('form', { class: 'session-picker', onSubmit: event => { event.preventDefault(); const value = input.value.trim(); if (!value) return; sessionId = value; if (modal.open) modal.close(); loadPage(); } }, h('label', {}, '会话', input), h('datalist', { id: listId }, (state.sessions || []).map(session => h('option', { value: session.id }, session.title || session.id))), button('切换会话', null, { type: 'submit', small: true }), h('span', { class: 'muted' }, '可选择已有会话或填写手动会话 ID；手动工作台不代表已连接 DSH。'));
   }
 
   function memoryPolicyStatus(policy) {
@@ -313,7 +356,32 @@
       toast('默认记忆开关已保存；独立设置的会话保持原设置。');
       await loadPage({ silent: true });
     });
-    return panel('默认记忆开关', setting.scope === 'profile' ? '当前 DSH profile' : '当前独立数据目录', form);
+    return h('div', { class: 'policy-panels' }, panel('默认记忆开关', setting.scope === 'profile' ? '当前 DSH profile' : '当前独立数据目录', form), memorySharingPanel());
+  }
+
+  function memorySharingPanel() {
+    const setting = state.memorySharing;
+    if (!setting) return info('全局记忆设置暂不可用。', 'warn');
+    const form = h('form');
+    const submit = button('保存全局记忆设置', null, { type: 'submit', variant: 'primary', small: true, iconName: 'check' });
+    form.append(toggle('跨工作区和角色共享记忆', 'globalMemoryEnabled', setting.enabled, '默认关闭。开启后，同一 DSH profile 的不同工作区与角色可召回彼此的共享活跃记忆；会话私有记录和封存内容除外。'),
+      h('p', { class: 'panel-subtitle' }, setting.scope === 'profile' ? '关闭后停止新的跨空间召回，原记录留在原空间。各空间与会话的暂停设置继续生效；角色身份、人格岛和工作目标不共享。已进入对话历史的内容不会被撤回。' : '当前独立控制台只有一个记忆空间；在 DSH 中此开关作用于同一 profile 的各个空间。'),
+      h('div', { class: 'policy-save-row' }, tag(setting.enabled ? '全局记忆：开启' : '全局记忆：关闭', setting.enabled ? 'green' : ''), submit));
+    wireForm(form, submit, async data => {
+      await api('/memory-sharing', { method: 'PATCH', body: { expectedVersion: setting.version, enabled: data.get('globalMemoryEnabled') === 'on' } });
+      toast('全局记忆设置已保存；从下一完整回合按新范围处理。');
+      await loadPage({ silent: true });
+    });
+    return panel('全局记忆', '同一 profile 内跨工作区与角色 · 可随时关闭', form);
+  }
+
+  async function openRecalledMemory(item) {
+    if (item.globalOrigin) {
+      if (!state.scopes?.some(scope => scope.id === item.globalOrigin.scopeId)) { toast('来源空间暂不可用。', true); return; }
+      changeScope(item.globalOrigin.scopeId);
+      await loadPage({ silent: true });
+    }
+    return openMemory(item.globalOrigin?.memoryId || item.id, item.tier || 'active');
   }
 
   function sessionMemoryForm() {
@@ -341,7 +409,7 @@
       const row = h('div', { class: 'goal-row', 'data-goal-id': goal.id || `goal-${crypto.randomUUID()}` },
         field('目标', 'goalText', goal.text || '', { required: true, maxlength: 300, placeholder: '当前要完成的事' }),
         field('状态', 'goalStatus', goal.status || 'active', { type: 'select', choices: [{ value: 'active', label: '进行中' }, { value: 'done', label: '已完成' }] }),
-        field('目标日期', 'goalDue', dateInput(goal.dueAt), { type: 'date' }), button('移除', () => row.remove(), { small: true, variant: 'subtle', 'aria-label': '移除这个目标' }));
+        field('目标日期（上海）', 'goalDue', dateInput(goal.dueAt), { type: 'date' }), button('移除', () => row.remove(), { small: true, variant: 'subtle', 'aria-label': '移除这个目标' }));
       goals.append(row);
     };
     (workspace.goals || []).forEach(addGoal);
@@ -357,7 +425,7 @@
     const energyValue = h('output', { class: 'energy-value', for: energy.id }, percent(energy.value));
     energy.after(energyValue); energy.addEventListener('input', () => { energyValue.textContent = percent(energy.value); });
     wireForm(form, submit, async data => {
-      const nextGoals = [...goals.children].map(row => ({ id: row.dataset.goalId, text: $('[name=goalText]', row).value.trim(), status: $('[name=goalStatus]', row).value, dueAt: $('[name=goalDue]', row).value ? `${$('[name=goalDue]', row).value}T23:59:59+08:00` : null }));
+      const nextGoals = [...goals.children].map(row => ({ id: row.dataset.goalId, text: $('[name=goalText]', row).value.trim(), status: $('[name=goalStatus]', row).value, dueAt: deadlineFromInput($('[name=goalDue]', row).value, workspace.goals.find(goal => goal.id === row.dataset.goalId)?.dueAt) }));
       await api(`/workspace?sessionId=${encodeURIComponent(sessionId)}`, { method: 'PATCH', body: { sessionId, expectedVersion: workspace.version || 0, goals: nextGoals, focus: String(data.get('focus') || '').split('\n').map(value => value.trim()).filter(Boolean), energy: Number(data.get('energy')), pinnedMemoryIds: [...pinned] } });
       toast('会话工作台已保存，后续召回使用新的目标与关注点。'); await loadPage({ silent: true });
     });
@@ -377,7 +445,7 @@
     if (!records?.length) return empty('此会话尚无回应依据', '完成真实回合后，这里记录入选记忆、未入选原因、当时状态及实际获得的调用用量。', 'eye');
     return h('div', { class: 'recall-history' }, records.map((recall, index) => h('details', { class: 'recall-entry', open: !compact && index === 0 },
       h('summary', {}, `${date(recall.at, true)} · 回合 ${recall.turnId || '未提供'} · ${recall.items?.length || 0} 条记忆 · ${recall.usedChars || 0}/${recall.limitChars || 0} 字符`),
-      h('div', { class: 'recall-body' }, h('h3', {}, '进入本轮上下文的记忆'), recall.items?.length ? recall.items.map(item => h('div', { class: 'readout' }, button(item.title || shortId(item.id), () => openMemory(item.id, item.tier || 'active'), { small: true, variant: 'subtle' }), h('span', { class: 'muted' }, (item.reasons || []).join(' · ') || '已纳入上下文'))) : h('p', { class: 'panel-subtitle' }, '本轮未选入记忆。'),
+      h('div', { class: 'recall-body' }, h('h3', {}, '进入本轮上下文的记忆'), recall.items?.length ? recall.items.map(item => h('div', { class: 'readout' }, button(item.title || shortId(item.id), () => openRecalledMemory(item), { small: true, variant: 'subtle' }), h('span', { class: 'muted' }, (item.reasons || []).join(' · ') || '已纳入上下文'))) : h('p', { class: 'panel-subtitle' }, '本轮未选入记忆。'),
         h('details', {}, h('summary', {}, `未入选候选与原因 · ${recall.excluded?.length || 0}`), recall.excluded?.length ? h('ul', { class: 'readable-list' }, recall.excluded.map(item => h('li', {}, h('span', { class: 'mono' }, item.id || '候选'), ' · ', Array.isArray(item.reasons) ? item.reasons.join(' · ') : item.reason || '未提供原因'))) : h('p', { class: 'panel-subtitle' }, '该回合没有记录未入选候选。')),
         h('details', {}, h('summary', {}, '当时的状态与表达建议'), readable(recall.state || {})),
         h('details', {}, h('summary', {}, `实际调用用量 · ${recall.usage?.length || 0}`), recall.usage?.length ? readable(recall.usage) : h('p', { class: 'panel-subtitle' }, '宿主未提供本轮用量；不估算 token 或费用。'))))));
@@ -408,12 +476,14 @@
     const emotion = state.emotion || {};
     const emotionPanel = panel('情绪控制台', '模拟状态 · 随时间自然回落', h('div', {}, h('div', { class: 'emotion-list' }, emotions.map(item => h('button', { type: 'button', class: 'emotion-row', style: { '--accent': item.color }, 'aria-label': `${item.label} ${percent(emotion.values?.[item.id])}，查看相关活跃记忆`, onClick: () => { emotionFilter = item.id; query = ''; kindFilter = ''; memoryOffset = 0; go('memories'); } }, h('span', { class: 'emotion-face' }, item.face), h('span', { class: 'emotion-label' }, item.label), h('span', { class: 'emotion-track', 'aria-hidden': 'true' }, h('span', { class: 'emotion-fill', style: { display: 'block', width: percent(emotion.values?.[item.id]) } })), h('span', { class: 'emotion-value' }, percent(emotion.values?.[item.id]))))), h('div', { class: 'emotion-note' }, h('strong', {}, emotion.reason || '尚无有效的情绪分析。'), h('div', {}, `置信度 ${percent(emotion.confidence)} · ${emotion.updatedAt ? date(emotion.updatedAt, true) : '等待真实互动'}`))), tag(state.config?.moodEnabled ? '已启用' : '已停用', state.config?.moodEnabled ? 'green' : ''));
     $('.panel-body', emotionPanel).append(button('重置到情绪基线', resetEmotionForm, { small: true, iconName: 'restore' }));
-    root.append(memoryDefaultPanel(), h('div', { class: 'spacer-20' }));
+    const policySummary = `会话记忆：${pageData.sessionMemory?.effectiveEnabled ? '开启' : '关闭'} · 全局共享：${state.memorySharing?.enabled ? '开启' : '关闭'}`;
+    const controls = h('details', { class: 'memory-controls', open: homePolicyExpanded, onToggle: event => { homePolicyExpanded = event.currentTarget.open; $('.disclosure-hint', event.currentTarget).textContent = homePolicyExpanded ? '收起设置' : '展开设置'; } }, h('summary', {}, icon('shield', 20), h('span', { class: 'memory-controls-title' }, h('strong', {}, '记忆与共享'), h('small', {}, policySummary)), h('span', { class: 'disclosure-hint' }, homePolicyExpanded ? '收起设置' : '展开设置'), h('span', { class: 'disclosure-chevron' }, icon('arrow', 16))), memoryDefaultPanel());
+    root.append(controls);
     root.append(h('div', { class: 'dashboard-grid' }, memoryPanel, emotionPanel));
     root.append(h('div', { class: 'spacer-20' }), workspacePanel());
 
     const recall = pageData.recalls?.items?.[0];
-    const recallContent = recall ? h('div', {}, h('div', { class: 'tags' }, tag(`上下文 ${recall.usedChars || 0} / ${recall.limitChars || 0} 字符`), tag(`会话 ${shortId(recall.sessionId)}`)), (recall.items || []).length ? recall.items.map(item => h('div', { class: 'readout' }, h('div', { class: 'readout-icon' }, icon(item.tier === 'archive' ? 'archive' : 'memory', 17)), h('div', { class: 'readout-main' }, h('button', { class: 'text-button readout-title', type: 'button', onClick: () => openMemory(item.id, item.tier || 'active') }, item.title || shortId(item.id)), h('div', { class: 'readout-meta' }, Array.isArray(item.reasons) ? item.reasons.join(' · ') : '已记录召回依据')), item.tier === 'archive' && tag('临时调阅', 'purple'))) : h('p', { class: 'inline-empty' }, '本回合没有符合条件的记忆。')) : h('p', { class: 'inline-empty' }, '还没有召回记录。接入 DSH 会话后，这里会显示本轮读取了什么，以及为什么被选中。');
+    const recallContent = recall ? h('div', {}, h('div', { class: 'tags' }, tag(`上下文 ${recall.usedChars || 0} / ${recall.limitChars || 0} 字符`), tag(`会话 ${shortId(recall.sessionId)}`)), (recall.items || []).length ? recall.items.map(item => h('div', { class: 'readout' }, h('div', { class: 'readout-icon' }, icon(item.tier === 'archive' ? 'archive' : 'memory', 17)), h('div', { class: 'readout-main' }, h('button', { class: 'text-button readout-title', type: 'button', onClick: () => openRecalledMemory(item) }, item.title || shortId(item.id)), h('div', { class: 'readout-meta' }, Array.isArray(item.reasons) ? item.reasons.join(' · ') : '已记录召回依据')), item.tier === 'archive' && tag('临时调阅', 'purple'))) : h('p', { class: 'inline-empty' }, '本回合没有符合条件的记忆。')) : h('p', { class: 'inline-empty' }, '还没有召回记录。接入 DSH 会话后，这里会显示本轮读取了什么，以及为什么被选中。');
     const activity = logs.length ? logs.map(log => h('div', { class: 'readout' }, h('div', { class: 'readout-icon' }, icon('pulse', 16)), h('div', { class: 'readout-main' }, h('div', { class: 'readout-title' }, actionNames[log.action] || log.action), h('div', { class: 'readout-meta mono' }, (log.targetIds || []).map(shortId).join(' · ') || '系统事件')), h('time', { class: 'readout-time', datetime: log.at }, date(log.at, true)))) : h('p', { class: 'inline-empty' }, '还没有操作记录。记忆的每一次写入、修订和迁移都会留下可追溯的轨迹。');
     root.append(h('div', { class: 'dashboard-lower' }, panel('此刻想起了什么', '最近一次上下文召回', recallContent, icon('eye', 17)), panel('最近的足迹', '只记录操作元数据，不记录私密正文', activity, h('button', { type: 'button', class: 'text-button', onClick: () => { systemTab = 'logs'; go('system'); } }, '查看日志', icon('arrow', 13)))));
     root.append(h('div', { class: 'spacer-20' }), panel('每一轮的回应依据', `会话 ${sessionId} · 展示实际上下文与用量，不展示私有推理`, recallHistory(pageData.recalls?.items, true)));
@@ -646,25 +716,32 @@
     const result = pageData.primary || { items: [], total: 0 };
     const items = result.items || [];
     const trash = archived && archiveTab === 'trash';
-    const root = h('div', {}, heading(trash ? '误删之前，留一步余地。' : archived ? '封存，不是遗忘。' : '把经历，留在这里。', trash ? '回收箱完整保留原文，不参与召回，也不会定时清除。' : archived ? '退出注意范围的记忆，在独立档案库中保存。' : '按发生日期浏览记忆球。每颗球的颜色对应真实的六维情绪比例。', archived ? [] : [button('导入记忆', () => startImport(), { iconName: 'document' }), button('新建记忆', () => memoryForm(), { variant: 'primary', iconName: 'plus' })]));
+    const root = h('div', {}, heading(trash ? '误删之前，留一步余地。' : archived ? '封存，不是遗忘。' : '把经历，留在这里。', trash ? '回收箱完整保留原文，不参与召回，也不会定时清除。' : archived ? '退出注意范围的记忆，在独立档案库中保存。' : '按时间、类型或情绪找回经历，选择适合自己的浏览方式。', archived ? [] : [button('导入记忆', () => startImport(), { iconName: 'document' }), button('新建记忆', () => memoryForm(), { variant: 'primary', iconName: 'plus' })]));
     if (archived) {
       root.append(h('div', { class: 'tabs', role: 'group', 'aria-label': '档案分类' }, [['archive', '封存档案'], ['trash', '回收箱']].map(([id, label]) => button(label, () => { archiveTab = id; memoryOffset = 0; clearSelection(); loadPage(); }, { class: `tab ${archiveTab === id ? 'active' : ''}`, 'aria-pressed': String(archiveTab === id) }))));
       root.append(info(trash ? '恢复会回到移入回收箱前的库。永久删除只能在回收箱详情内另行确认完整 ID；宿主历史和外部备份不受影响。' : '本库不参与日常召回。查看原文不会授权模型读取；临时调阅只用于所选会话的一轮，恢复活跃才会重新参与日常召回。', 'purple'));
     }
-    const filters = h('form', { class: 'memory-filters' }, h('div', { class: 'filter-fields' },
+    const filters = h('form', { class: 'memory-filters' }, h('div', { class: 'filter-primary' },
       field('关键词', 'query', query, { type: 'search', placeholder: '搜索记忆内容' }),
       field('类型', 'kind', kindFilter, { type: 'select', choices: [{ value: '', label: '全部类型' }, ...Object.entries(kinds).map(([value, label]) => ({ value, label }))] }),
+      button('搜索记忆', null, { type: 'submit', iconName: 'search', variant: 'primary' })),
+      h('details', { class: 'advanced-filters', open: advancedFiltersExpanded || Boolean(entityFilter || emotionFilter || fromFilter || toFilter), onToggle: event => { advancedFiltersExpanded = event.currentTarget.open; } }, h('summary', {}, '更多筛选', h('span', {}, '人物 · 情绪 · 日期')), h('div', { class: 'filter-fields' },
       field('人物或实体', 'entity', entityFilter, { placeholder: '在全库按人物筛选' }),
       field('情绪', 'emotion', emotionFilter, { type: 'select', choices: [{ value: '', label: '全部情绪' }, ...emotions.map(item => ({ value: item.id, label: item.label }))] }),
-      field('开始日期（上海）', 'from', fromFilter, { type: 'date' }), field('结束日期（上海）', 'to', toFilter, { type: 'date' })),
-      h('div', { class: 'filter-actions' }, button('筛选整个记忆库', null, { type: 'submit', iconName: 'search' }), button('清除筛选', () => { query = ''; kindFilter = ''; emotionFilter = ''; entityFilter = ''; fromFilter = ''; toFilter = ''; memoryOffset = 0; clearSelection(); loadPage(); }, { small: true, variant: 'subtle' })));
+      field('开始日期（上海）', 'from', fromFilter, { type: 'date' }), field('结束日期（上海）', 'to', toFilter, { type: 'date' }))));
+    const activeFilters = [
+      [query && `关键词：${query}`, () => { query = ''; }], [kindFilter && `类型：${kinds[kindFilter]}`, () => { kindFilter = ''; }],
+      [entityFilter && `人物：${entityFilter}`, () => { entityFilter = ''; }], [emotionFilter && `情绪：${emotions.find(item => item.id === emotionFilter)?.label}`, () => { emotionFilter = ''; }],
+      [fromFilter && `起始：${fromFilter}`, () => { fromFilter = ''; }], [toFilter && `截至：${toFilter}`, () => { toFilter = ''; }],
+    ].filter(([label]) => label);
+    if (activeFilters.length) filters.append(h('div', { class: 'active-filters' }, h('span', {}, '当前筛选'), activeFilters.map(([label, remove]) => h('button', { class: 'filter-token', type: 'button', 'aria-label': `移除筛选 ${label}`, onClick: () => { remove(); memoryOffset = 0; clearSelection(); loadPage(); } }, h('span', {}, label), icon('close', 13))), button('清除全部', () => { query = ''; kindFilter = ''; emotionFilter = ''; entityFilter = ''; fromFilter = ''; toFilter = ''; memoryOffset = 0; clearSelection(); loadPage(); }, { small: true, variant: 'subtle' })));
     filters.addEventListener('submit', event => { event.preventDefault(); const data = new FormData(filters); if (data.get('from') && data.get('to') && data.get('from') > data.get('to')) { toast('开始日期不能晚于结束日期。', true); return; } query = data.get('query').trim(); kindFilter = data.get('kind'); emotionFilter = data.get('emotion'); entityFilter = data.get('entity').trim(); fromFilter = data.get('from'); toFilter = data.get('to'); memoryOffset = 0; clearSelection(); loadPage(); });
     root.append(filters);
-    const switcher = h('div', { class: 'view-switch', role: 'group', 'aria-label': '记忆显示方式' }, [['orbs', '日期球体视图', 'memory'], ['grid', '卡片视图', 'grid'], ['list', '列表视图', 'list']].map(([mode, label, glyph]) => h('button', { type: 'button', class: view === mode ? 'active' : '', 'aria-label': label, title: label, 'aria-pressed': String(view === mode), onClick: () => { view = mode; renderPage(); } }, icon(glyph, 15))));
+    const switcher = h('div', { class: 'view-switch', role: 'group', 'aria-label': '记忆显示方式' }, [['orbs', '时间线', 'memory'], ['grid', '卡片', 'grid'], ['list', '列表', 'list']].map(([mode, label, glyph]) => h('button', { type: 'button', class: view === mode ? 'active' : '', 'aria-label': `${label}视图`, title: `${label}视图`, 'aria-pressed': String(view === mode), onClick: () => { view = mode; const result = appearance?.set({ memoryView: mode }); if (result && !result.saved) toast('视图已切换，当前环境无法保存偏好。'); renderPage(); } }, icon(glyph, 15), label)));
     const offset = Number(result.offset ?? memoryOffset);
     root.append(h('div', { class: 'list-caption' }, h('span', {}, `共 ${result.total ?? items.length} 条 · ${items.length ? `第 ${offset + 1}–${offset + items.length} 条` : '当前无记录'}`), switcher));
     if (!trash && items.length) root.append(h('div', { class: 'batch-bar' }, h('label', {}, h('input', { type: 'checkbox', checked: items.every(item => selectedMemories.has(item.id)), 'aria-label': '选择本页全部记忆', onChange: event => { items.forEach(item => event.target.checked ? selectedMemories.set(item.id, item.version) : selectedMemories.delete(item.id)); updateSelectionUI(); } }), '选择本页'), h('span', { role: 'status' }, `已选择 ${selectedMemories.size} 条`), button('清空选择', () => { clearSelection(); updateSelectionUI(); }, { small: true, disabled: !selectedMemories.size }), button(archived ? '批量恢复活跃' : '批量封存', () => batchForm(archived ? 'restore' : 'archive'), { small: true, variant: 'primary', disabled: !selectedMemories.size }), !archived && button('导入到会话', () => startImport({ memoryIds: [...selectedMemories.keys()] }), { small: true, disabled: !selectedMemories.size })));
-    if (!items.length) root.append(empty('这里暂时没有记忆', '可调整筛选条件。查询只访问当前选择的库，空结果不代表其他库中没有记录。', trash ? 'trash' : archived ? 'archive' : 'memory'));
+    if (!items.length) root.append(empty(activeFilters.length ? '没有匹配的记忆' : '这里还没有记忆', activeFilters.length ? '试试减少筛选条件，或换一个关键词。' : archived ? '退出日常召回的经历会保存在这里，方便以后查阅。' : '完成一次 DSH 对话，或手动记下一段重要的经历。', trash ? 'trash' : archived ? 'archive' : 'memory', activeFilters.length ? button('清除全部筛选', () => { query = ''; kindFilter = ''; emotionFilter = ''; entityFilter = ''; fromFilter = ''; toFilter = ''; memoryOffset = 0; clearSelection(); loadPage(); }, { iconName: 'refresh' }) : !archived && button('新建第一条记忆', () => memoryForm(), { variant: 'primary', iconName: 'plus' })));
     else if (view === 'orbs') root.append(orbTimeline(items, archived ? 'archive' : 'active', !trash));
     else root.append(h('div', { class: view === 'list' ? 'memory-list' : 'memory-grid' }, items.map(memory => selectableCard(memory, archived ? 'archive' : 'active', !trash))));
     const pager = pagination(result, memoryOffset, next => { memoryOffset = next; loadPage(); main.scrollIntoView({ block: 'start' }); }, archived ? '封存记忆分页' : '活跃记忆分页');
@@ -801,22 +878,23 @@
   function memoryForm(memory) {
     const editing = !!memory;
     const form = h('form');
+    if (!editing) form.append(info(`默认保存到会话：${state.sessions?.find(session => session.id === sessionId)?.title || sessionId || 'manual'}。可在下方选择其他来源会话。`));
     const grid = h('div', { class: 'form-grid' }, field('记忆标题', 'title', memory?.title, { required: true, maxlength: 160, full: true, placeholder: '给这段经历一个容易想起的名字' }), field('记忆内容', 'content', memory?.content, { type: 'textarea', required: true, maxlength: 20000, full: true, rows: 5, placeholder: '记录发生了什么，并保留事实与推测之间的区别。' }));
     if (!editing) {
-      grid.append(field('记忆类型', 'kind', 'episode', { type: 'select', choices: Object.entries(kinds).map(([value, label]) => ({ value, label })) }), field('来源类型', 'sourceType', 'user', { type: 'select', choices: Object.entries(sources).map(([value, label]) => ({ value, label })) }), field('来源会话 ID', 'sessionId', state.sessions?.[0]?.id || '', { required: true, maxlength: 200, placeholder: '例如：个人笔记，或实际 DSH 会话 ID', hint: '用于来源追溯和会话隔离；手动记录可填写独立标识。' }), field('来源引用', 'sourceRef', '', { maxlength: 2000, placeholder: '文件、链接或其他可核对的来源' }), field('事件发生时间', 'eventAt', '', { type: 'datetime-local', hint: '留空使用创建时间；填写值按本机时区转换。' }));
-      if (state.sessions?.length) grid.append(h('div', { class: 'field' }, h('span', { class: 'field-label' }, '已知会话'), h('div', { class: 'evidence-links' }, state.sessions.slice(0, 5).map(session => h('button', { type: 'button', onClick: () => { form.elements.sessionId.value = session.id; } }, shortId(session.id))))));
+      grid.append(field('记忆类型', 'kind', 'episode', { type: 'select', choices: Object.entries(kinds).map(([value, label]) => ({ value, label })) }), field('来源类型', 'sourceType', 'user', { type: 'select', choices: Object.entries(sources).map(([value, label]) => ({ value, label })) }), field('来源会话 ID', 'sessionId', sessionId || state.sessions?.[0]?.id || 'manual', { required: true, maxlength: 200, placeholder: '例如：个人笔记，或实际 DSH 会话 ID', hint: '用于来源追溯和会话隔离；手动记录可填写独立标识。' }), field('来源引用', 'sourceRef', '', { maxlength: 2000, placeholder: '文件、链接或其他可核对的来源' }), field('事件发生时间', 'eventAt', '', { type: 'datetime-local', hint: '留空使用创建时间；填写值按本机时区转换。' }));
+      if (state.sessions?.length) grid.append(h('div', { class: 'field' }, h('span', { class: 'field-label' }, '已知会话'), h('div', { class: 'evidence-links' }, state.sessions.slice(0, 5).map(session => h('button', { type: 'button', onClick: () => { form.elements.sessionId.value = session.id; } }, session.title || shortId(session.id))))));
     }
     grid.append(field('可见范围', 'visibility', memory?.visibility || 'session', { type: 'select', choices: [{ value: 'session', label: '仅来源会话' }, { value: 'workspace', label: '此工作区 / Agent 的所有会话' }], hint: '共享意味着其他会话可在日常召回中使用。' }), field('重要度（0–1）', 'importance', memory?.importance ?? 0.5, { type: 'number', min: 0, max: 1, step: 0.05, required: true }), field('标签', 'tags', (memory?.tags || []).join(', '), { maxlength: 2000, placeholder: '工作, 项目, 家庭', hint: '多个标签用逗号分隔。' }), field('人物或实体', 'entities', (memory?.entities || []).map(value => typeof value === 'string' ? value : JSON.stringify(value)).join(', '), { maxlength: 2000, placeholder: '用逗号分隔' }));
-    grid.append(field('到期日期', 'dueAt', dateInput(memory?.dueAt), { type: 'date', hint: '约定、待办可填写；留空表示没有期限。' }), field('画像结构', 'profileFacet', memory?.profileFacet || '', { type: 'select', choices: [{ value: '', label: '未指定' }, ...Object.entries(facets).map(([value, label]) => ({ value, label }))] }));
+    grid.append(field('到期日期（上海）', 'dueAt', dateInput(memory?.dueAt), { type: 'date', hint: '留空表示没有期限。未修改日期时保留原截止时刻；修改日期按上海当天日末保存。' }), field('画像结构', 'profileFacet', memory?.profileFacet || '', { type: 'select', choices: [{ value: '', label: '未指定' }, ...Object.entries(facets).map(([value, label]) => ({ value, label }))] }));
     grid.append(field('信息归属', 'subject', memory?.subject || 'user', { type: 'select', choices: Object.entries(subjects).map(([value, label]) => ({ value, label })), hint: '用户偏好与 Agent 性格分开保存；外部事实不属于任何人格。' }));
     if (editing) grid.append(field('修订原因', 'reason', '', { type: 'textarea', required: true, maxlength: 1000, rows: 2, full: true, placeholder: '说明哪里记错了，以及修订依据。', hint: '本次编辑保留原文与历史版本。来源与事件时间不会被覆盖。' }));
-    else grid.append(h('div', { class: 'field full' }, toggle('这是剧情或虚构经历', 'fictional', false, '明确区分角色剧情与真实发生的事情。')));
+    grid.append(h('div', { class: 'field full' }, toggle('这是剧情或虚构经历', 'fictional', memory?.fictional === true, '开启后不参与日常召回。纠正误判时可关闭，分类变化保留在修订历史中。')));
     const submit = button(editing ? '保存修订' : '创建记忆', null, { variant: 'primary', type: 'submit' });
     form.append(grid, h('div', { class: 'modal-actions' }, button('取消', () => editing ? showMemory(memory) : modal.close()), submit));
     wireForm(form, submit, async data => {
       const payload = { title: data.get('title').trim(), content: data.get('content').trim(), importance: Number(data.get('importance')), visibility: data.get('visibility'), tags: split(data.get('tags')), entities: split(data.get('entities')) };
-      Object.assign(payload, { dueAt: data.get('dueAt') ? `${data.get('dueAt')}T23:59:59+08:00` : null, profileFacet: data.get('profileFacet') || null, subject: data.get('subject') });
-      if (editing) Object.assign(payload, { expectedVersion: memory.version, reason: data.get('reason').trim() });
+      Object.assign(payload, { dueAt: deadlineFromInput(data.get('dueAt'), memory?.dueAt), profileFacet: data.get('profileFacet') || null, subject: data.get('subject') });
+      if (editing) Object.assign(payload, { expectedVersion: memory.version, reason: data.get('reason').trim(), fictional: data.get('fictional') === 'on' });
       else Object.assign(payload, { kind: data.get('kind'), fictional: data.get('fictional') === 'on', source: { type: data.get('sourceType'), sessionId: data.get('sessionId').trim(), turnId: '', ref: data.get('sourceRef').trim() }, ...(data.get('eventAt') ? { eventAt: new Date(data.get('eventAt')).toISOString() } : {}) });
       const result = await api(editing ? `/memories/${encodeURIComponent(memory.id)}` : '/memories', { method: editing ? 'PATCH' : 'POST', body: payload });
       toast(editing ? '修订已保存，原始经历和旧版本仍然保留。' : '记忆已创建，进入活跃记忆库。');
@@ -1071,8 +1149,8 @@
   function renderSystem() {
     const root = h('div', {}, heading('看得见，也掌控得了。', '配置记忆的边界，检查每一次变化。所有时间按上海时区显示。'));
     root.append(h('div', { class: 'runtime-box' }, h('div', {}, h('small', {}, '运行模式'), h('strong', {}, state.runtime?.mode === 'standalone' ? '独立控制台' : state.runtime?.mode || '未知'), h('small', { style: { 'margin-top': '6px' } }, state.runtime?.connected ? 'DSH 已连接' : '未连接 DSH 会话')), h('div', {}, h('small', {}, '工作区 / Agent'), h('strong', {}, `${state.runtime?.workspaceId || '未绑定'} / ${state.runtime?.agentId || '未绑定'}`)), h('div', {}, h('small', {}, '存储规则'), h('strong', {}, state.storage?.mode === 'sqlite-separated' ? '活跃与封存使用独立 SQLite 库' : state.storage?.mode || '未返回存储状态'), h('small', { style: { 'margin-top': '6px' } }, state.storage?.autoDelete === false ? '禁止自动删除 · 固定规则' : '存储策略未确认'))));
-    root.append(h('div', { class: 'tabs', role: 'group', 'aria-label': '运行设置页面' }, [['settings', '插件设置'], ['recalls', '按轮回应依据'], ['logs', '操作日志']].map(([id, label]) => h('button', { type: 'button', 'aria-pressed': String(systemTab === id), class: `tab ${systemTab === id ? 'active' : ''}`, onClick: () => { systemTab = id; renderPage(); } }, label))));
-    root.append(systemTab === 'logs' ? logView(pageData.secondary?.items || []) : systemTab === 'recalls' ? h('div', {}, sessionPicker(), recallHistory(pageData.recalls?.items)) : h('div', {}, memoryDefaultPanel(), h('div', { class: 'spacer-20' }), configForm(pageData.primary || state.config || {})));
+    root.append(h('div', { class: 'tabs', role: 'group', 'aria-label': '运行设置页面' }, [['settings', '插件设置'], ['appearance', '颜色与外观'], ['recalls', '按轮回应依据'], ['logs', '操作日志']].map(([id, label]) => h('button', { type: 'button', 'aria-pressed': String(systemTab === id), class: `tab ${systemTab === id ? 'active' : ''}`, onClick: () => { systemTab = id; renderPage(); } }, label))));
+    root.append(systemTab === 'appearance' ? h('section', { class: 'panel appearance-inline' }, appearanceControls()) : systemTab === 'logs' ? logView(pageData.secondary?.items || []) : systemTab === 'recalls' ? h('div', {}, sessionPicker(), recallHistory(pageData.recalls?.items)) : h('div', {}, memoryDefaultPanel(), h('div', { class: 'spacer-20' }), configForm(pageData.primary || state.config || {})));
     return root;
   }
 
@@ -1085,7 +1163,8 @@
     const form = h('form');
     const grid = h('div', { class: 'settings-grid' });
     grid.append(h('section', { class: 'settings-section' }, h('h3', {}, '运行开关'), h('p', {}, '开关影响后续处理，不删除已保存的内容。'), toggle('暂停此记忆空间', 'scopePaused', config.enabled === false, '暂停当前工作区与 Agent 的自动记忆处理，优先于各会话开关；既有记录、手动管理和显式导入保留。'), toggle('捕获新记忆', 'captureEnabled', config.captureEnabled, '暂停后不再自动捕获新对话。'), toggle('更新情绪状态', 'moodEnabled', config.moodEnabled, '只接受具有足够置信度的结构化分析。'), toggle('后台整理建议', 'dreamEnabled', config.dreamEnabled, '仅产生待审建议，不自动执行封存或人格变化。'), toggle('提出主动关怀建议', 'proactiveEnabled', config.proactiveEnabled, '只在控制台生成建议，不向外发送消息。')));
-    grid.firstElementChild.append(toggle('允许受控语义检索', 'semanticEnabled', config.semanticEnabled !== false, '仅在可见活跃记忆中补充召回线索；最终结果仍受证据、会话和预算校验。'));
+    grid.firstElementChild.append(toggle('允许辅助模型调用', 'modelEnabled', config.modelEnabled !== false, '关闭后，此空间停止语义规划与回合提炼的辅助模型调用；保留原话捕获、本地概念检索和手动管理。'), toggle('允许受控语义检索', 'semanticEnabled', config.semanticEnabled !== false, '仅在可见活跃记忆中补充召回线索；最终结果仍受证据、会话和预算校验。'));
+    grid.firstElementChild.append(field('新对话记忆的可见范围', 'captureVisibility', config.captureVisibility || 'workspace', { type: 'select', choices: [{ value: 'workspace', label: '此工作区 / Agent 的所有会话（默认）' }, { value: 'session', label: '仅来源会话' }], hint: '共享记录默认供同一工作区与角色使用，开启全局记忆后也可跨空间召回。此设置作用于之后的自动记录；私有背景的提炼仍只对来源会话可见。' }));
     grid.append(h('section', { class: 'settings-section' }, h('h3', {}, '召回与记忆保留'), h('p', {}, '降低召回权重不会删除记忆，封存始终需要审批。'), h('div', { class: 'form-grid' }, field('上下文预算（字符）', 'maxContextChars', config.maxContextChars, { type: 'number', min: 256, max: 16000, step: 1, required: true }), field('每轮最多召回', 'maxRecallItems', config.maxRecallItems, { type: 'number', min: 1, max: 30, step: 1, required: true }), field('记忆权重半衰期（天）', 'halfLifeDays', config.halfLifeDays, { type: 'number', min: 1, max: 36500, step: 1, required: true }), field('封存建议年龄（天）', 'archiveAfterDays', config.archiveAfterDays, { type: 'number', min: 1, max: 36500, step: 1, required: true, hint: '达到天数只进入建议候选。' }), field('每日捕获上限', 'dailyCaptureLimit', config.dailyCaptureLimit, { type: 'number', min: 1, max: 10000, step: 1, required: true, hint: '达到上限跳过新捕获，不淘汰已有记忆。' }))));
     grid.append(h('section', { class: 'settings-section' }, h('h3', {}, '身份与人格底稿'), h('p', {}, '角色身份与用户画像分开保存；记忆内容不改变宿主工具权限。'), h('div', { class: 'form-grid' }, field('身份底稿', 'identity', config.identity, { type: 'textarea', full: true, maxlength: 2000, rows: 3, placeholder: '描述 agent 的身份与基本定位。' }), field('人格底稿', 'persona', config.persona, { type: 'textarea', full: true, maxlength: 2000, rows: 3, placeholder: '描述稳定的表达方式与性格倾向。' }))));
     grid.append(h('section', { class: 'settings-section' }, h('h3', {}, '情绪与安静时段'), h('p', {}, '情绪影响表达与注意，不决定事实真假。'), h('div', { class: 'form-grid' }, field('分析最低置信度', 'minConfidence', config.minConfidence, { type: 'number', min: 0, max: 1, step: 0.05, required: true }), field('情绪半衰期（小时）', 'emotionHalfLifeHours', config.emotionHalfLifeHours, { type: 'number', min: 0.1, max: 720, step: 0.1, required: true }), field('安静时段开始（小时）', 'quietStart', config.quietHours?.start ?? 22, { type: 'number', min: 0, max: 23, step: 1, required: true }), field('安静时段结束（小时）', 'quietEnd', config.quietHours?.end ?? 8, { type: 'number', min: 0, max: 23, step: 1, required: true }), field('关怀建议最小间隔（小时）', 'proactiveIntervalHours', config.proactiveIntervalHours ?? 24, { type: 'number', min: 1, max: 8760, step: 1, required: true }), field('安静时段时区', 'timeZone', config.timeZone || 'Asia/Shanghai', { required: true, maxlength: 100, placeholder: 'Asia/Shanghai' })), h('div', { class: 'emotion-note' }, '安静时段内暂停定时整理，并抑制主动关怀候选；对话完成或手工整理仍可生成普通建议。关怀建议受会话频率限制，只留在控制台。')));
@@ -1093,7 +1172,8 @@
     form.append(grid, h('div', { class: 'save-bar' }, h('span', {}, '固定规则：不自动删除；封存独立存放；审批后才产生变化。'), submit));
     wireForm(form, submit, async data => {
       const patch = { enabled: data.get('scopePaused') !== 'on' };
-      ['captureEnabled', 'moodEnabled', 'dreamEnabled', 'proactiveEnabled', 'semanticEnabled'].forEach(key => { patch[key] = data.get(key) === 'on'; });
+      patch.captureVisibility = data.get('captureVisibility');
+      ['captureEnabled', 'moodEnabled', 'dreamEnabled', 'proactiveEnabled', 'semanticEnabled', 'modelEnabled'].forEach(key => { patch[key] = data.get(key) === 'on'; });
       ['maxContextChars', 'maxRecallItems', 'halfLifeDays', 'archiveAfterDays', 'dailyCaptureLimit', 'minConfidence', 'emotionHalfLifeHours', 'proactiveIntervalHours'].forEach(key => { patch[key] = Number(data.get(key)); });
       patch.timeZone = data.get('timeZone').trim();
       patch.persona = data.get('persona'); patch.identity = data.get('identity');
@@ -1107,16 +1187,20 @@
 
   modal.addEventListener('close', () => { importFlow = null; modal.classList.remove('import-dialog'); });
   modal.addEventListener('click', event => { if (event.target === modal) { const rect = modal.getBoundingClientRect(); if (event.clientX < rect.left || event.clientX > rect.right || event.clientY < rect.top || event.clientY > rect.bottom) modal.close(); } });
+  $('#appearance-button').addEventListener('click', openAppearance);
+  appearanceDialog.addEventListener('click', event => { if (event.target === appearanceDialog) { const rect = appearanceDialog.getBoundingClientRect(); if (event.clientX < rect.left || event.clientX > rect.right || event.clientY < rect.top || event.clientY > rect.bottom) appearanceDialog.close(); } });
+  document.addEventListener('insideout:appearance', syncAppearance);
+  syncAppearance();
   $('#refresh-button').append(icon('refresh', 15));
   $('#refresh-button').addEventListener('click', () => loadPage());
-  $('#scope-select').addEventListener('change', event => {
-    scopeId = event.currentTarget.value;
+  function changeScope(nextScopeId) {
+    scopeId = nextScopeId;
     scopeEpoch++;
     state = null; pageData = {}; query = ''; kindFilter = ''; emotionFilter = ''; fromFilter = ''; toFilter = ''; entityFilter = ''; sessionId = ''; selectedIsland = ''; archiveTab = 'archive'; memoryOffset = 0; coreOffset = 0; clearSelection();
     if (modal.open) modal.close();
     $('#toast-region').replaceChildren();
-    loadPage();
-  });
+  }
+  $('#scope-select').addEventListener('change', event => { changeScope(event.currentTarget.value); loadPage(); });
   window.addEventListener('hashchange', () => { if (modal.open) modal.close(); memoryOffset = 0; coreOffset = 0; clearSelection(); loadPage(); });
   try { boot = JSON.parse($('#insideout-boot').textContent); } catch { boot = null; }
   loadPage();

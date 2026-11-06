@@ -45,7 +45,7 @@ const provider = createServer(async (req, res) => {
     } else if (system.includes('你为本轮用户问题规划记忆检索')) {
       kind = 'semantic-recall'
       const input = JSON.parse(users.at(-1))
-      result = JSON.stringify({ semanticHits: input.candidates.filter(v => v.content.includes('E2E_PRIVATE_ALPHA_7429')).slice(0, 1).map(v => ({ id: v.id, score: 0.98, reason: '匹配本轮测试查询' })) })
+      result = JSON.stringify({ ...(input.query.includes('E2E_REWRITE_THE_GIFT') ? { query: 'CONSTELLATION_GIFT_6182' } : {}), semanticHits: input.candidates.filter(v => v.content.includes('E2E_SHARED_ALPHA_7429')).slice(0, 1).map(v => ({ id: v.id, score: 0.98, reason: '匹配本轮测试查询' })) })
     } else if (current.includes('E2E_TOOL_A') && body.messages.at(-1).role !== 'tool') {
       tool = true; result = ''
     } else {
@@ -57,7 +57,7 @@ const provider = createServer(async (req, res) => {
     const base = { id: `chatcmpl-synthetic-${requests.length}`, object: 'chat.completion.chunk', created: Math.floor(Date.now() / 1000), model: body.model }
     const emit = value => res.write(`data: ${JSON.stringify({ ...base, ...value })}\n\n`)
     emit({ choices: [{ index: 0, delta: { role: 'assistant' }, finish_reason: null }] })
-    if (tool) emit({ choices: [{ index: 0, delta: { tool_calls: [{ index: 0, id: `synthetic-call-${requests.length}`, type: 'function', function: { name: 'insideout_search_memory', arguments: JSON.stringify({ query: 'E2E_PRIVATE_ALPHA_7429', limit: 3, maxChars: 3000 }) } }] }, finish_reason: null }] })
+    if (tool) emit({ choices: [{ index: 0, delta: { tool_calls: [{ index: 0, id: `synthetic-call-${requests.length}`, type: 'function', function: { name: 'insideout_search_memory', arguments: JSON.stringify({ query: 'E2E_SHARED_ALPHA_7429', limit: 3, maxChars: 3000 }) } }] }, finish_reason: null }] })
     else emit({ choices: [{ index: 0, delta: { content: result }, finish_reason: null }] })
     emit({ choices: [{ index: 0, delta: {}, finish_reason: tool ? 'tool_calls' : 'stop' }] })
     emit({ choices: [], usage: { prompt_tokens: 120, completion_tokens: 24, total_tokens: 144, prompt_tokens_details: { cached_tokens: 10 } } })
@@ -129,7 +129,7 @@ try {
   await command(['--profile', 'web', '--dump-config'], 'initial-config.private.log')
   await command(['plugin', '--profile', 'web', 'add', tarball], 'installation.private.log')
   const profile = join(home, 'profiles/web')
-  for (const path of ['src/dsh/host.js', 'src/dsh/session-import.js', 'src/core/service.js', 'src/core/policy.js', 'src/core/imports.js', 'src/core/import-file.js', 'src/core/intelligence.js', 'src/http/api.js', 'web/app.js', 'web/styles.css']) {
+  for (const path of ['src/dsh/host.js', 'src/dsh/session-import.js', 'src/core/service.js', 'src/core/policy.js', 'src/core/imports.js', 'src/core/import-file.js', 'src/core/intelligence.js', 'src/core/record-validation.js', 'src/http/api.js', 'web/index.html', 'web/app.js', 'web/dates.js', 'web/appearance.js', 'web/styles.css', 'web/themes.css']) {
     const packaged = (await run('tar', ['-xOf', tarball, 'package/' + path], { encoding: 'buffer', maxBuffer: 4e6 })).stdout
     assert.deepEqual(await readFile(join(profile, 'node_modules', manifest.name, path)), packaged, `Installed runtime differs from tarball: ${path}`)
   }
@@ -153,7 +153,7 @@ try {
   assert.ok(credentials, 'Official web host did not become ready; inspect isolated host log')
   check('官方 CLI 安装候选包并启动完整隔离 Web 宿主')
   const a = 'insideout-e2e-session-a', b = 'insideout-e2e-session-b'
-  const first = await turn(a, 'E2E_RECORD_A：我偏好简洁表达。我的私有测试口令是 E2E_PRIVATE_ALPHA_7429。')
+  const first = await turn(a, 'E2E_RECORD_A：我偏好简洁表达。我的跨会话测试代号是 E2E_SHARED_ALPHA_7429。')
   primaryScope = (await api('/state')).runtime.scopeId
   const stored = (await captured(a, 1))[0]
   assert.equal(stored.extraction.method, 'host-model'); assert.equal(stored.kind, 'preference'); assert.equal(stored.importance, 0.93)
@@ -165,16 +165,16 @@ try {
   assert.ok(recallRequest)
   assert.ok(recallRequest.body.messages.some(v => textOf(v.content).includes('dsh-pseudo-insideout') && textOf(v.content).includes(stored.id)), 'newly injected context did not reach provider')
   check('下一真实回合的模型请求含新增记忆参考与真实记忆 ID')
-  await turn(b, 'E2E_SESSION_B：请说明你收到的本轮输入。')
+  await turn(b, 'E2E_SESSION_B：还记得我的表达偏好和测试代号吗？')
   await captured(b, 1)
   const other = requests.find(v => v.kind === 'conversation' && v.current.includes('E2E_SESSION_B'))
-  assert.ok(other); assert.ok(!JSON.stringify(other.body).includes('E2E_PRIVATE_ALPHA_7429'))
-  check('同工作区第二会话的完整模型请求不含 A 私有记忆', { sessionId: b })
+  assert.ok(other); assert.equal(stored.visibility, 'workspace'); assert.ok(JSON.stringify(other.body).includes('E2E_SHARED_ALPHA_7429')); assert.ok(JSON.stringify(other.body).includes(stored.id))
+  check('同工作区新会话默认召回 A 的自动记忆，完整模型请求包含原记忆 ID 与正文', { sessionId: b })
   const toolTurn = await turn(a, 'E2E_TOOL_A：请用 insideout_search_memory 查找我的测试口令。')
   await captured(a, 3)
   assert.ok(toolTurn.events.some(v => v.type === 'tool/call'))
   const toolReturn = toolTurn.events.find(v => v.type === 'tool/result')
-  assert.ok(toolReturn); assert.ok(JSON.stringify(toolReturn).includes('E2E_PRIVATE_ALPHA_7429'))
+  assert.ok(toolReturn); assert.ok(JSON.stringify(toolReturn).includes('E2E_SHARED_ALPHA_7429'))
   check('真实模型工具调用经官方原生工具管线返回活跃记忆')
   const recalls = await api('/recalls?sessionId=' + a)
   const usage = recalls.items.flatMap(v => v.usage || [])
@@ -265,6 +265,66 @@ try {
   assert.ok(newContexts(recallImported.events).includes(selectedMemory.id), 'selected imported memory was not newly injected')
   assert.ok(!newContexts(recallImported.events).includes('HISTORY_UNSELECTED_8251'))
   check('显式导入的所选历史在目标会话下一真实回合召回，未选正文不注入')
+
+  // Rewriting must reach a low-priority record outside the bounded model pool.
+  for (let i = 0; i < 36; i++) await api('/memories', { method: 'POST', body: { content: `普通高优先记录 ${i}`, importance: 1, source: { type: 'user', sessionId: a } } })
+  const gift = await api('/memories', { method: 'POST', body: { content: 'CONSTELLATION_GIFT_6182 星穹纪念石', importance: 0.01, source: { type: 'user', sessionId: a } } })
+  const beforeRewrite = requests.length
+  const rewritten = await turn(a, 'E2E_REWRITE_THE_GIFT：回想那个特别礼物。')
+  const rewriteCall = requests.slice(beforeRewrite).find(v => v.kind === 'semantic-recall')
+  assert.ok(rewriteCall)
+  const recallInput = JSON.parse(textOf(rewriteCall.body.messages.findLast(v => v.role === 'user').content))
+  assert.ok(!recallInput.candidates.some(v => v.id === gift.id), 'target unexpectedly appeared in the model snapshot')
+  assert.ok(newContexts(rewritten.events).includes(gift.id), 'rewritten query was not used by the real host')
+  check('真实宿主使用模型改写词召回候选池之外的低优先记忆')
+  // Wait for the completed turn's pending analysis before changing settings.
+  for (let i = 0; i < 100; i++) {
+    if ((await api('/memories?limit=100')).items.some(v => v.content.includes('E2E_REWRITE_THE_GIFT'))) break
+    await wait(50)
+  }
+  const beforeLocalRows = (await api('/memories?limit=100')).items.filter(v => v.source.sessionId === a).length
+  await api('/config', { method: 'PATCH', body: { modelEnabled: false } })
+  const beforeLocalRequests = requests.length
+  const local = await turn(a, 'E2E_LOCAL_ONLY：请回想 CONSTELLATION_GIFT_6182，保留本轮原话。')
+  const localRows = await captured(a, beforeLocalRows + 1)
+  assert.ok(newContexts(local.events).includes(gift.id))
+  assert.ok(!requests.slice(beforeLocalRequests).some(v => v.kind !== 'conversation'))
+  assert.equal(localRows.find(v => v.content.includes('E2E_LOCAL_ONLY')).extraction.method, 'local-rules')
+  assert.equal((await api('/session-memory?sessionId=' + a)).effectiveEnabled, true)
+  check('控制台辅助模型总开关关闭两类辅助请求，同时保留真实回合本地召回和原话捕获')
+
+  await api('/config', { method: 'PATCH', body: { captureVisibility: 'session' } })
+  const privateSession = 'insideout-e2e-private-source', privateTarget = 'insideout-e2e-private-target'
+  await setSessionPolicy(privateSession, 'on')
+  await turn(privateSession, 'E2E_PRIVATE_CAPTURE：只属于本会话的代号 PRIVATE_SCOPE_1106。')
+  const privateMemory = (await captured(privateSession, 1))[0]
+  assert.equal(privateMemory.visibility, 'session')
+  await api('/config', { method: 'PATCH', body: { captureVisibility: 'workspace' } })
+  await setSessionPolicy(privateTarget, 'on')
+  const privateCheck = await turn(privateTarget, 'E2E_PRIVATE_TARGET：请回想其他会话的私有代号。')
+  assert.ok(!newContexts(privateCheck.events).includes('PRIVATE_SCOPE_1106'))
+  assert.ok(!newContexts(privateCheck.events).includes(privateMemory.id))
+  check('选择仅来源会话后自动捕获保持私有，恢复共享默认也不扩大旧私有记录范围')
+
+  const sharing = await api('/memory-sharing', { scope: secondaryScope })
+  assert.equal(sharing.enabled, false)
+  const globalRowsBefore = (await api('/memories?limit=100', { scope: secondaryScope })).items.filter(value => value.source.sessionId === c).length
+  await api('/memory-sharing', { method: 'PATCH', scope: secondaryScope, body: { expectedVersion: sharing.version, enabled: true } })
+  assert.equal((await api('/memory-sharing')).enabled, true)
+  const globalRecall = await turn(c, 'E2E_GLOBAL_ON：请回想另一个工作区里的 E2E_SHARED_ALPHA_7429 表达偏好。', 'secondary')
+  await captured(c, globalRowsBefore + 1, secondaryScope)
+  const sharedId = `global:${primaryScope}:${stored.id}`
+  assert.ok(newContexts(globalRecall.events).includes(sharedId))
+  assert.ok(newContexts(globalRecall.events).includes('E2E_SHARED_ALPHA_7429'))
+  assert.ok(!newContexts(globalRecall.events).includes(privateMemory.id))
+  check('全局记忆默认关闭；开启后真实跨工作区回合注入带来源的共享记忆，私有记忆仍不可见')
+  const enabledSharing = await api('/memory-sharing')
+  await api('/memory-sharing', { method: 'PATCH', body: { expectedVersion: enabledSharing.version, enabled: false } })
+  const globalOff = await turn(c, 'E2E_GLOBAL_OFF：再次回想 E2E_SHARED_ALPHA_7429。', 'secondary')
+  await captured(c, globalRowsBefore + 2, secondaryScope)
+  assert.ok(!newContexts(globalOff.events).includes(sharedId))
+  assert.equal((await api('/memory-sharing', { scope: secondaryScope })).enabled, false)
+  check('任一空间关闭全局开关后，其他空间下一真实回合停止新增跨空间引用')
 
   const logText = (await readFile(join(isolated, 'host.private.log'), 'utf8')).replace(/\x1b\[[0-9;]*m/g, '')
   const authUrl = logText.match(new RegExp(`http://127\\.0\\.0\\.1:${webPort}/\\?token=[A-Za-z0-9_-]+`))?.[0]

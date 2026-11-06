@@ -241,13 +241,18 @@ function stance(text) {
 /** Calendar days use the supplied IANA zone; unknown deadlines remain null. */
 export function analyzeLocalTurn(userText, { now, timeZone = 'UTC' } = {}) {
   const text = normalize(userText).slice(0, 64000), clock = nowDate(now);
-  const fictional = /(?:假设|假如|设想|如果|倘若|扮演|角色扮演|在故事里|故事中|小说中|在小说里|虚构的|写一个故事|写个故事)|\b(?:if|suppose|hypothetical|imagine|pretend|role[ -]?play|in (?:a|the) story|fictional)\b/iu.test(text);
+  // Code and a conditional follow-up do not turn an independent real statement
+  // into fiction. Explicit story/role-play framing remains conservative.
+  const prose = text.replace(/```[\s\S]*?```|`[^`\n]*`/g, ' ').trim();
+  const fictional = /(?:假设|假如|设想|扮演|角色扮演|在故事里|故事中|小说中|在小说里|虚构的|写一个故事|写个故事)|\b(?:suppose|hypothetical|imagine|pretend|role[ -]?play|in (?:a|the) story|fictional)\b/iu.test(prose)
+    || /^(?:如果|倘若|if\b(?!\s*\())/iu.test(prose);
+  const conditional = /如果|倘若|\bif\b/iu.test(prose);
   const reported = /(?:助手|模型|机器人|AI|ChatGPT)(?:说|称|认为|猜测|回复)|\b(?:the )?(?:assistant|model|chatgpt|bot) (?:said|says|thinks|claimed|claims)\b/iu.test(text);
   const requestOnly = /^(?:请|帮我|能否|可以|你能|你觉得|你喜欢|我该不该|我要不要)|^(?:can you|could you|would you|please|should i|do you)\b/iu.test(text) && !/^(?:请记住|请记录)|^(?:please remember|please note)\b/iu.test(text);
   const question = /[?？]\s*$|(?:吗|是否喜欢|是不是喜欢)\s*[。]?$/u.test(text) || /^(?:what|why|which|who|how|do i|am i|can i)\b/iu.test(text);
   const self = /(?:我|本人|我们)|\b(?:i|my|we|our)\b/iu.test(text);
   const directSelf = /我(?!的|妈|爸|母亲|父亲|朋友|同事|伴侣|丈夫|妻子)|本人|\b(?:i|we)\b/iu.test(text);
-  const reliableClaim = Boolean(text) && !fictional && !reported && !requestOnly && !question;
+  const reliableClaim = Boolean(text) && !fictional && !conditional && !reported && !requestOnly && !question;
   const preference = (directSelf || /我的(?:偏好|口味)|\bmy (?:preference|favorite|favourite)\b/iu.test(text)) && /喜欢|喜爱|偏爱|偏好|讨厌|不爱|更愿意|口味|\b(?:like|love|prefer|enjoy|dislike|hate|a fan of|preference|favorite|favourite)\b/iu.test(text);
   const habit = (directSelf || /我的习惯|\bmy habit\b/iu.test(text)) && /习惯|每天|每周|通常|总是|经常|从不|\b(?:habit|every day|every morning|every week|usually|always|often|never|regularly)\b/iu.test(text);
   const value = (directSelf || /我的(?:原则|价值观|底线)|\bmy (?:values|principles)\b/iu.test(text)) && /重视|看重|珍视|原则|价值观|底线|\b(?:value|values|believe in|principle|principles|care deeply about)\b/iu.test(text);
@@ -281,7 +286,7 @@ export function analyzeLocalTurn(userText, { now, timeZone = 'UTC' } = {}) {
   const completedToday = /已|刚|了|今早|\b(?:already|earlier today|completed|finished|met|went|received)\b/iu.test(text);
   const eventInstant = hasClock ? clockInstant : temporal?.from;
   const eventAt = kind !== 'commitment' && narrated && !futurePlan && temporal?.exactDay && eventInstant !== null && eventInstant <= clock?.getTime() && temporal.calendarFrom <= temporal.calendarToday && (temporal.calendarFrom < temporal.calendarToday || completedToday) ? iso(eventInstant) : null;
-  const caution = fictional ? '包含假设或虚构提示，只保留为非事实经历' : reported ? '包含助手或模型转述，不提取为用户本人的事实' : !reliableClaim ? '请求、问题或空文本不提升为已确认陈述' : '仅按用户自述形成离线规则候选，未经事实核验';
+  const caution = fictional ? '包含假设或虚构提示，只保留为非事实经历' : reported ? '包含助手或模型转述，不提取为用户本人的事实' : conditional ? '包含条件表达，保留原话供核对，不提炼为确定的个人事实' : !reliableClaim ? '请求、问题或空文本不提升为已确认陈述' : '仅按用户自述形成离线规则候选，未经事实核验';
   const dateBasis = absolute ? '文本中的明确 ISO 时区偏移' : `${timeZone} 日历`;
   return { kind, importance, tags: matched.map(([, label]) => label), entities: extractEntities(text), fictional, dueAt, eventAt, profileFacet, semanticKeys: unique(semanticKeys), reason: `${caution}${profileFacet ? `；${FACET_LABELS[profileFacet]}为可修正分类` : ''}${dueAt ? `；日期按 ${dateBasis}解析，${hasClock ? '使用明确时刻' : '未提供时刻时取所选时区日末'}` : ''}${eventAt ? `；经历日期按 ${dateBasis}解析，${hasClock ? '使用明确时刻' : '仅有日期时以该日开始表示日期粒度'}` : ''}${hasClock && temporal && clockInstant === null ? '；时刻无效或存在夏令时歧义，未自动确定时间' : ''}。` };
 }
@@ -296,21 +301,26 @@ function lexicalTokens(text) {
 }
 
 /** Finite bilingual concept expansion, not general semantic embeddings. */
-export function semanticSimilarity(query, memory) {
-  const queryText = normalize(query);
-  if (!queryText || memory?.fictional) return 0;
-  const memoryText = typeof memory === 'string' ? memory : [memory?.title, memory?.content, ...(Array.isArray(memory?.tags) ? memory.tags : []), ...(Array.isArray(memory?.entities) ? memory.entities : [])].filter(Boolean).join(' ');
-  if (!memoryText) return 0;
-  const queryKeys = new Set(concepts(queryText).map(([key]) => `concept:${key}`));
-  const memoryKeys = new Set([...concepts(memoryText).map(([key]) => `concept:${key}`), ...(Array.isArray(memory?.semanticKeys) ? memory.semanticKeys.filter(key => typeof key === 'string') : [])]);
-  const common = [...queryKeys].filter(key => memoryKeys.has(key)).length;
-  const conceptScore = queryKeys.size ? common / queryKeys.size : 0;
-  const queryTokens = lexicalTokens(queryText), memoryTokens = lexicalTokens(memoryText);
-  const lexicalScore = queryTokens.size ? [...queryTokens].filter(token => memoryTokens.has(token)).length / queryTokens.size : 0;
+export function semanticFeatures(value) {
+  const list = key => Array.isArray(value?.[key]) ? value[key].filter(item => typeof item === 'string') : [];
+  const text = typeof value === 'string' ? normalize(value) : [value?.title, value?.content, ...list('tags'), ...list('entities')].filter(Boolean).join(' ');
+  return { empty: !text, fictional: value?.fictional === true,
+    keys: new Set([...concepts(text).map(([key]) => `concept:${key}`), ...list('semanticKeys')]),
+    tokens: lexicalTokens(text), stance: stance(typeof value === 'string' ? text : value?.content ?? '') };
+}
+
+export function semanticFeatureSimilarity(query, memory) {
+  if (query.empty || memory.empty || memory.fictional) return 0;
+  const common = [...query.keys].filter(key => memory.keys.has(key)).length;
+  const conceptScore = query.keys.size ? common / query.keys.size : 0;
+  const lexicalScore = query.tokens.size ? [...query.tokens].filter(token => memory.tokens.has(token)).length / query.tokens.size : 0;
   let score = common ? 0.75 * conceptScore + 0.25 * lexicalScore : 0.45 * lexicalScore;
-  const queryStance = stance(queryText), memoryStance = stance(typeof memory === 'string' ? memory : memory.content ?? '');
-  if (queryStance && memoryStance && queryStance !== memoryStance) score *= 0.3;
+  if (query.stance && memory.stance && query.stance !== memory.stance) score *= 0.3;
   return Math.round(Math.max(0, Math.min(1, score)) * 10000) / 10000;
+}
+
+export function semanticSimilarity(query, memory) {
+  return semanticFeatureSimilarity(semanticFeatures(query), semanticFeatures(memory));
 }
 
 /** Extractive synthesis: all retained claims keep explicit evidence references. */

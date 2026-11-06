@@ -56,6 +56,17 @@ test('semantic hits, concept expansion and date/entity filters cannot cross scop
   assert.equal(s.listMemories({ from: '2026-10-27', to: '2026-10-28', entity: '小林' }).items[0].id, own.id);
 });
 
+test('an oversized candidate does not hide shorter search results that fit the remaining budget', t => {
+  const { s } = fixture(t);
+  s.createMemory(input('needle', { title: '大型元数据候选', importance: 1, tags: Array.from({ length: 40 }, (_, i) => `${i}-${'x'.repeat(150)}`) }));
+  const short = s.createMemory(input('needle', { title: '可容纳的候选', importance: 0.5 }));
+  const result = s.searchActive({ sessionId: 'a', query: 'needle', maxChars: 1000 });
+  assert.equal(result.total, 2);
+  assert.deepEqual(result.items.map(m => m.id), [short.id]);
+  assert.ok(result.usedChars <= result.limitChars);
+  assert.deepEqual(s.analysisContext({ sessionId: 'a', query: 'needle', maxChars: 1000 }).items.map(m => m.id), [short.id]);
+});
+
 test('model extraction is bounded and model proposals reject stale or cross-session evidence', t => {
   const { s } = fixture(t); s.updateConfig({ dreamEnabled: true });
   const existing = s.createMemory(input('原有经历'));

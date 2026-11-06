@@ -65,6 +65,8 @@ window.__ModuleLoader__.load({
 
 通过 `ctx.slots.inject('settings.section', () => ctx.slots.register({name:'settings.section', id, order, label}, Component))` 可以注册设置入口，组件可展示同源 iframe 控制台。`dsh.client.platform='web'`；client manifest 的 inject 用于客户端插件启动，工厂内 inject 声明服务。基线共享 React 可通过 require 取得，无需重复打包 React。
 
+主侧栏入口使用官方 `sidebar.panellist` list，注册的 `id` 对应 `main` keyed slot 的 `key`。本插件使用独立的 `pseudo-insideout`，不覆盖宿主 `conversation`；两处入口复用同源控制台。客户端清单显式依赖 `ui-layout`、`ui-sidebar` 和 `ui-settings`。2026-11-05 核对已安装官方包中的 `ui-sidebar/lib/types/client/contract/slots.d.ts` 与 `ui-layout/lib/types/client/index.d.ts`，支持范围内的版本均提供这些席位。主面板为折叠侧栏及桌面窗口控件预留宿主声明的空间。
+
 可实现方案：宿主 `/pseudo-insideout/` 提供 HTML，浏览器半端提供“总部控制台”入口；保留可单独打开的同源 URL。iframe 与 API 都由同一宿主承担。这里选择 iframe 是工程方案，非官方要求。
 
 依据：[客户端模块系统](https://github.com/deepseek-ai/deepseek-harness/blob/f3803c96974ad4a94195fb97e5c637e9c2a3afe3/packages/client/modules/README.md)、[设置页 cookbook](https://github.com/deepseek-ai/deepseek-harness/blob/f3803c96974ad4a94195fb97e5c637e9c2a3afe3/docs/cookbook/adding-a-settings-card.md)、[官方 slot 注册用例](https://github.com/deepseek-ai/deepseek-harness/blob/f3803c96974ad4a94195fb97e5c637e9c2a3afe3/packages/client/ui-settings-plugins/src/client/index.ts)。
@@ -104,7 +106,7 @@ window.__ModuleLoader__.load({
 
 已确认：`ctx.profileContext` 由 profile launcher 提供，含 `name,dir,home,cwd`。不在 profile 启动的组合可能没有该服务；应要求显式配置 profile 身份或禁用，不能悄悄退回某个全局 default 导致串库。
 
-`agent.session.id` 是会话身份；`session.header.cwd` 是创建时工作目录；`session.header.agentPreset` 是预设身份；`header.origin==='subagent'` 是官方子 agent 分类。`ctx.agents.roots()` 可取当前根 agent，但 origin 的历史语义仍应按 header 判断。默认隔离维度可为 profile 目录、agent preset（缺省明确为 default）、workspace 规范路径、session ID；跨 session workspace 共享必须由用户显式选用。DSH 当前会话身份不等于可自行假设的长期人格身份。
+`agent.session.id` 是会话身份；`session.header.cwd` 是创建时工作目录；`session.header.agentPreset` 是预设身份；`header.origin==='subagent'` 是官方子 agent 分类。`ctx.agents.roots()` 可取当前根 agent，但 origin 的历史语义仍应按 header 判断。数据根按 profile 目录、agent preset（缺省明确为 default）与 workspace 规范路径隔离；2026-11-06 按用户要求将自动记忆默认改为同范围跨 session 共享，可配置仅来源会话。DSH 当前会话身份不等于可自行假设的长期人格身份。
 
 依据：[ProfileContext](https://github.com/deepseek-ai/deepseek-harness/blob/f3803c96974ad4a94195fb97e5c637e9c2a3afe3/packages/boot/app-boot/src/profile-context.ts)、[SessionHeader](https://github.com/deepseek-ai/deepseek-harness/blob/f3803c96974ad4a94195fb97e5c637e9c2a3afe3/packages/core/session/src/types.ts)、[Agent registry](https://github.com/deepseek-ai/deepseek-harness/blob/f3803c96974ad4a94195fb97e5c637e9c2a3afe3/packages/core/agent/src/index.ts)。
 

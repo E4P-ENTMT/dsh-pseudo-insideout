@@ -105,6 +105,34 @@ test('pre-step read source, repeated prompt assembly and archive invalidation fo
   assert.ok(!after.contexts.some(v => v.name === 'dsh-pseudo-insideout' && v.text.includes('海边')))
 })
 
+test('completed dialogue is recalled in a new DSH session through context and tools, including after plugin restart', async t => {
+  const h = await harness(t), a = await h.agent('cross-session-source')
+  const service = h.services.find(s => s.state().runtime.connected)
+  complete(h, a, 1, '我喜欢无糖咖啡，偏好代号 CROSS_SESSION_1106。')
+  await settle()
+  const stored = service.listMemories().items[0]
+  assert.equal(stored.visibility, 'workspace')
+  const b = await h.agent('cross-session-target')
+  const recall = async agent => {
+    await h.preStep(agent, 1, [message(`recall-${agent.session.id}`, '我的咖啡偏好是什么？')])
+    const assembly = await h.ctx.systemPrompt.assemble({ scope: agent, agent })
+    assert.ok(assembly.contexts.some(item => item.name === 'dsh-pseudo-insideout' && item.text.includes(stored.id)))
+    const result = (await h.ctx.tools.execute({ agent, signal: new AbortController().signal, calls: [{ type: 'tool-call', id: 'cross-session-call', name: 'insideout_search_memory', arguments: JSON.stringify({ query: '咖啡' }) }] })).results[0].result
+    assert.equal(result.isError, false)
+    assert.ok(result.value.items.some(item => item.id === stored.id))
+  }
+  await recall(b)
+  for (const other of [await h.agent('other-workspace', '/workspace/b'), await h.agent('other-role', '/workspace/a', 'different')]) {
+    await h.preStep(other, 1, [message('other-query', 'CROSS_SESSION_1106 咖啡')])
+    const assembly = await h.ctx.systemPrompt.assemble({ scope: other, agent: other })
+    assert.ok(!assembly.contexts.some(item => item.text.includes('CROSS_SESSION_1106')))
+  }
+  for (const agent of h.agents) h.ctx.emit(scopeTarget(agent, agent), 'agent/disposed', { agent })
+  h.agents.length = 0
+  await h.fiber.restart()
+  await recall(await h.agent('cross-session-after-restart'))
+})
+
 test('failed turns and subagents are excluded; workspace/preset separate services and persistence survives detach', async t => {
   const h = await harness(t)
   const a = await h.agent('session-a', '/workspace/a', 'assistant')
@@ -194,16 +222,22 @@ test('loopback HTTP requires token and same origin, blocks Host spoofing and sta
   assert.equal(service.listMemories().total, 0, 'accepted previews and rejected uploads do not write records')
 })
 
-test('DSH client factory registers a real settings section with same-origin iframe', async () => {
+test('DSH client sidebar entry addresses its own main panel and retains the settings console', async () => {
   let bundle
   vm.runInNewContext(await readFile(new URL('../src/dsh/client.js', import.meta.url), 'utf8'), { window: { __ModuleLoader__: { load(value) { bundle = value } } } })
   assert.equal(bundle.id, 'dsh-pseudo-insideout')
   const React = { createElement: (type, props, ...children) => ({ type, props, children }) }
   const client = bundle.factory(name => { assert.equal(name, 'react'); return React })
-  let registration
-  client.apply({ slots: { inject(name, callback) { assert.equal(name, 'settings.section'); callback() }, register(options, component) { registration = { options, component }; return () => {} } } })
-  assert.equal(registration.options.name, 'settings.section')
-  const view = registration.component()
+  const registrations = new Map()
+  client.apply({ slots: { inject(name, callback) { assert.ok(['main', 'sidebar.panellist', 'settings.section'].includes(name)); callback() }, register(options, component) { registrations.set(options.name, { options, component }); return () => {} } } })
+  const panel = registrations.get('main'), entry = registrations.get('sidebar.panellist'), settings = registrations.get('settings.section')
+  assert.equal(panel.options.key, entry.options.id, 'sidebar navigation must resolve an existing keyed main panel')
+  assert.notEqual(panel.options.key, 'conversation', 'opening memory must not replace the host conversation panel')
+  assert.equal(entry.options.label, '记忆总部')
+  assert.equal(entry.component({ size: 18 }).props.width, 18)
+  const panelView = panel.component()
+  assert.equal(panelView.children[1].children[0].type, settings.component, 'both entrances show the same console')
+  const view = settings.component()
   assert.equal(view.children[0].type, 'iframe')
   assert.equal(view.children[0].props.src, '/pseudo-insideout/')
 })
@@ -269,6 +303,87 @@ const jsonModel = response => ({ stream: async function* (request) {
   const value = typeof response === 'function' ? response(request) : response
   yield { type: 'text-delta', text: JSON.stringify(value) }
 } })
+
+test('optional global memory reaches host planning, prompts and tools across workspaces and roles, and survives restart', async t => {
+  const planning = [], analysis = []
+  let globalId
+  const h = await harness(t, { config: { analyzeTurns: true }, llm: jsonModel(request => {
+    const input = JSON.parse(request.messages[0].content[0].text)
+    if (request.maxTokens === 1200) {
+      planning.push(input)
+      return { semanticHits: input.candidates.some(item => item.id === globalId) ? [{ id: globalId, score: 0.99, reason: '来自全局共享的偏好' }] : [] }
+    }
+    analysis.push(input)
+    return { confidence: 0.9, reason: '本轮明确陈述', memory: extractedMemory() }
+  }) })
+  const a = await h.agent('global-source'), b = await h.agent('global-workspace', '/workspace/b'), c = await h.agent('global-role', '/workspace/a', 'writer')
+  const source = h.services.find(s => s.runtime.workspaceId === '/workspace/a' && s.runtime.agentId === 'default')
+  const destination = h.services.find(s => s.runtime.workspaceId === '/workspace/b')
+  let memory = source.createMemory({ title: '全局偏好', content: 'GLOBAL_HOST_1106 喜欢无糖咖啡', kind: 'preference', visibility: 'workspace', source: { type: 'user', sessionId: a.session.id } })
+  globalId = `global:${source.runtime.scopeId}:${memory.id}`
+  await h.preStep(b, 1, [message('off', 'GLOBAL_HOST_1106')])
+  assert.equal(planning.length, 0, 'an empty local space does not send foreign candidates or call the planner while global memory is off')
+  assert.ok(!JSON.stringify(await h.ctx.systemPrompt.assemble({ scope: b, agent: b })).includes(globalId))
+  source.updateMemorySharing({ expectedVersion: 0, enabled: true })
+  const recall = async (agent, turn) => {
+    await h.preStep(agent, turn, [message(`global-${turn}`, 'GLOBAL_HOST_1106')])
+    assert.ok(planning.at(-1).candidates.some(item => item.id === globalId && item.globalOrigin.memoryId === memory.id))
+    const assembly = await h.ctx.systemPrompt.assemble({ scope: agent, agent })
+    assert.ok(assembly.contexts.some(item => item.name === 'dsh-pseudo-insideout' && item.text.includes(globalId)))
+    const result = (await h.ctx.tools.execute({ agent, signal: new AbortController().signal, calls: [{ type: 'tool-call', id: 'global-search', name: 'insideout_search_memory', arguments: JSON.stringify({ query: 'GLOBAL_HOST_1106' }) }] })).results[0].result
+    assert.equal(result.isError, false)
+    assert.ok(result.value.items.some(item => item.id === globalId && item.globalOrigin.scopeId === source.runtime.scopeId))
+    return assembly
+  }
+  await recall(b, 2); await recall(c, 2)
+  destination.updateConfig({ dreamEnabled: true })
+  complete(h, b, 2, '这是本工作区的新经历，请记住本轮的表达偏好。')
+  await settle()
+  assert.ok(analysis.length)
+  assert.ok(!JSON.stringify(analysis.at(-1).background).includes('GLOBAL_HOST_1106'), 'foreign background cannot become persistent local extraction metadata')
+  assert.ok(destination.listMemories().items.every(item => !item.analysisEvidenceIds?.includes(globalId)))
+  const assembly = await recall(b, 3)
+  source.archiveMemory(memory.id, { expectedVersion: memory.version, reason: '撤回全局来源' })
+  assert.ok(!JSON.stringify(h.ctx.systemPrompt.refreshContext(assembly, { scope: b, agent: b })).includes(globalId))
+  memory = source.restoreMemory(memory.id, { expectedVersion: source.getMemory(memory.id, { tier: 'archive' }).version })
+  for (const agent of h.agents) h.ctx.emit(scopeTarget(agent, agent), 'agent/disposed', { agent })
+  h.agents.length = 0
+  const previousCount = h.services.length
+  await h.fiber.restart()
+  const next = await h.agent('global-after-restart', '/workspace/b')
+  const reopened = h.services.slice(previousCount).find(s => s.runtime.workspaceId === '/workspace/b')
+  assert.equal(reopened.getMemorySharing().enabled, true)
+  await recall(next, 1)
+  reopened.updateMemorySharing({ expectedVersion: reopened.getMemorySharing().version, enabled: false })
+  await h.preStep(next, 2, [message('off-again', 'GLOBAL_HOST_1106')])
+  assert.ok(!planning.at(-1).candidates.some(item => item.id === globalId))
+  assert.ok(!JSON.stringify(await h.ctx.systemPrompt.assemble({ scope: next, agent: next })).includes(globalId))
+})
+
+test('switching global memory off and back on aborts pending host planning without reviving the same turn', async t => {
+  let started, signal, calls = 0
+  const ready = new Promise(resolve => { started = resolve })
+  const h = await harness(t, { llm: { stream: async function* (request) {
+    signal = request.signal; calls++; started()
+    await new Promise(resolve => request.signal.addEventListener('abort', resolve, { once: true }))
+    yield { type: 'text-delta', text: '{"semanticHits":[]}' }
+  } } })
+  const a = await h.agent('global-pending-source'), b = await h.agent('global-pending-target', '/workspace/b')
+  const source = h.services.find(s => s.runtime.workspaceId === '/workspace/a'), target = h.services.find(s => s.runtime.workspaceId === '/workspace/b')
+  source.createMemory({ content: 'GLOBAL_PENDING_1106', visibility: 'workspace', source: { type: 'user', sessionId: a.session.id } })
+  source.updateMemorySharing({ expectedVersion: 0, enabled: true })
+  policy(target, b.session.id, 'on')
+  const pending = h.preStep(b, 1, [message('global-pending', 'GLOBAL_PENDING_1106')])
+  await ready
+  source.updateMemorySharing({ expectedVersion: 1, enabled: false })
+  assert.equal(signal.aborted, true)
+  source.updateMemorySharing({ expectedVersion: 2, enabled: true })
+  await pending
+  await h.preStep(b, 1, [message('global-again', 'GLOBAL_PENDING_1106')])
+  assert.equal(calls, 1)
+  assert.equal(target.peekContext({ sessionId: b.session.id, turnId: '1' }), null)
+  assert.ok(!JSON.stringify(await h.ctx.systemPrompt.assemble({ scope: b, agent: b })).includes('GLOBAL_PENDING_1106'))
+})
 
 test('structured growth analysis uses bounded active evidence and authoritative memory/island versions', async () => {
   const context = { items: [
@@ -591,6 +706,32 @@ test('profile memory default is shared across scopes, registers muted sessions a
   assert.equal(latest.getMemoryDefault().enabled, false)
 })
 
+test('saving ordinary configuration with an unchanged enabled flag preserves the open turn', async t => {
+  const h = await harness(t)
+  const a = await h.agent(), s = h.services.find(service => service.state().runtime.connected)
+  s.updateConfig({ semanticEnabled: false })
+  const memory = s.createMemory({ content: '当前回合仍可用的参考', source: { type: 'user', sessionId: a.session.id }, kind: 'fact' })
+  const user = message('config-save-user', '我喜欢简洁的回答。')
+  h.emit(a, 'turn/start', { turn: 1 })
+  await h.preStep(a, 1, [user])
+  h.emit(a, 'user/message', user)
+  const before = s.getSessionMemory({ sessionId: a.session.id })
+  let notifications = 0
+  const off = s.onMemoryPolicyChange(() => { notifications++ })
+  try {
+    s.updateConfig({ enabled: true, maxContextChars: 3000 })
+    s.updateConfig({ ...s.getConfig(), quietHours: { start: 23, end: 7 } })
+    assert.equal(s.getSessionMemory({ sessionId: a.session.id }).stamp, before.stamp)
+    assert.equal(notifications, 0)
+    await h.preStep(a, 1, [])
+    const assembly = await h.ctx.systemPrompt.assemble({ scope: a, agent: a })
+    assert.ok(assembly.contexts.some(context => context.text.includes(memory.id)))
+    h.emit(a, 'turn/end', { turn: 1, reason: { kind: 'completed' } })
+    await settle()
+    assert.ok(s.listMemories().items.some(m => m.source.turnId === '1' && m.content.includes('简洁的回答')))
+  } finally { off() }
+})
+
 test('off then on during a turn clears capture and recall until the next complete turn', async t => {
   let calls = 0
   const h = await harness(t, { llm: jsonModel(() => { calls++; return { semanticHits: [] } }) })
@@ -830,4 +971,72 @@ test('DSH import adapter paginates scoped metadata, rereads commit source and le
   assert.equal((await unavailable({ ...base, method: 'GET', path: '/imports/sessions' })).body.available, false)
   const forged = await run({ ...base, method: 'POST', path: '/imports/preview', body: { source: 'dsh', sourceSessionId: 'source', targetSessionId: 'target', records: [{ userText: '伪造' }] } })
   assert.equal(forged.status, 400)
+})
+
+test('recall prioritizes query-related candidates and uses rewriting to reach outside the model snapshot', async t => {
+  let turn = 0, target
+  const llm = jsonModel(request => {
+    const body = JSON.parse(request.messages[0].content[0].text)
+    turn++
+    assert.ok(!JSON.stringify(body).includes('PRIVATE_TARGET_7efa'))
+    assert.ok(!JSON.stringify(body).includes('ARCHIVED_TARGET_7efa'))
+    if (turn === 1) assert.ok(body.candidates.some(m => m.id === target), 'query relevance outranks thirty high-importance unrelated records')
+    if (turn === 2) assert.ok(!body.candidates.some(m => m.id === target), 'rewrite test really starts outside the bounded candidate set')
+    return { query: '星穹纪念石', semanticHits: [] }
+  })
+  const h = await harness(t, { llm }), a = await h.agent()
+  const s = h.services.find(v => v.state().runtime.connected)
+  for (let i = 0; i < 36; i++) s.createMemory({ content: `日常办公记录 ${i}`, importance: 1, source: { type: 'user', sessionId: a.session.id } })
+  target = s.createMemory({ content: '星穹纪念石', importance: 0.01, eventAt: '2026-10-30T04:00:00Z', source: { type: 'user', sessionId: a.session.id } }).id
+  s.createMemory({ content: '星穹纪念石 PRIVATE_TARGET_7efa', importance: 1, source: { type: 'user', sessionId: 'private' } })
+  const archived = s.createMemory({ content: '星穹纪念石 ARCHIVED_TARGET_7efa', importance: 1, source: { type: 'user', sessionId: a.session.id } })
+  s.archiveMemory(archived.id, { expectedVersion: archived.version, reason: '隔离' })
+  await h.preStep(a, 1, [message('1', '星穹纪念石')])
+  assert.ok(s.peekContext({ sessionId: a.session.id, turnId: '1' }).items.some(m => m.id === target))
+  await h.preStep(a, 2, [message('2', '那个特别礼物呢')])
+  assert.ok(s.peekContext({ sessionId: a.session.id, turnId: '2' }).items.some(m => m.id === target))
+  await h.preStep(a, 3, [message('3', '2026-10-29 那个特别礼物呢')])
+  assert.ok(!s.peekContext({ sessionId: a.session.id, turnId: '3' }).items.some(m => m.id === target), 'rewriting must retain the original date constraint')
+})
+
+test('model switch cancels in-flight analysis, preserves raw capture and blocks both auxiliary paths', async t => {
+  let signal, calls = 0
+  const llm = { stream: async function* (request) {
+    calls++; signal = request.signal
+    await new Promise(resolve => request.signal.addEventListener('abort', resolve, { once: true }))
+    yield { type: 'text-delta', text: JSON.stringify({ confidence: 1, reason: 'stale', memory: extractedMemory() }) }
+  } }
+  const h = await harness(t, { llm, config: { analyzeTurns: true } }), a = await h.agent()
+  const s = h.services.find(v => v.state().runtime.connected)
+  h.emit(a, 'turn/start', { turn: 1 }); h.emit(a, 'user/message', message('1', '我喜欢小猫。'))
+  h.emit(a, 'turn/end', { turn: 1, reason: { kind: 'completed' } }); await settle()
+  assert.equal(calls, 1)
+  s.updateConfig({ modelEnabled: false }); assert.equal(signal.aborted, true); await settle()
+  const captured = s.listMemories().items[0]
+  assert.ok(captured.original.includes('我喜欢小猫'))
+  assert.equal(captured.extraction.method, 'local-rules')
+  await h.preStep(a, 2, [message('2', 'kittens')])
+  assert.ok(s.peekContext({ sessionId: a.session.id, turnId: '2' }).items.some(m => m.id === captured.id))
+  const assembly = await h.ctx.systemPrompt.assemble({ scope: a, agent: a })
+  assert.ok(assembly.contexts.some(v => v.name === 'dsh-pseudo-insideout' && v.text.includes(captured.id)))
+  h.emit(a, 'turn/start', { turn: 2 }); h.emit(a, 'user/message', message('3', '我今天完成了工作。'))
+  h.emit(a, 'turn/end', { turn: 2, reason: { kind: 'completed' } }); await settle()
+  assert.equal(calls, 1); assert.equal(s.listMemories().total, 2)
+})
+
+test('cancelled semantic planning falls back locally and cannot be revived by toggling back on', async t => {
+  let signal, calls = 0
+  const llm = { stream: async function* (request) {
+    calls++; signal = request.signal
+    await new Promise(resolve => request.signal.addEventListener('abort', resolve, { once: true }))
+    yield { type: 'text-delta', text: JSON.stringify({ query: '不存在的词', semanticHits: [] }) }
+  } }
+  const h = await harness(t, { llm }), a = await h.agent(), s = h.services.find(v => v.state().runtime.connected)
+  const m = s.createMemory({ content: '我喜欢小猫', source: { type: 'user', sessionId: a.session.id } })
+  const pending = h.preStep(a, 1, [message('1', 'kittens')]); await settle()
+  s.updateConfig({ modelEnabled: false }); assert.equal(signal.aborted, true)
+  s.updateConfig({ modelEnabled: true }); await pending
+  await h.preStep(a, 1, [message('1', 'kittens')])
+  assert.equal(calls, 1)
+  assert.ok(s.peekContext({ sessionId: a.session.id, turnId: '1' }).items.some(v => v.id === m.id))
 })

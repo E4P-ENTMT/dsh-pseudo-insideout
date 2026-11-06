@@ -4,28 +4,39 @@
 
 # dsh-pseudo-insideout
 
+[![Release](https://img.shields.io/github/v/release/E4P-ENTMT/dsh-pseudo-insideout)](https://github.com/E4P-ENTMT/dsh-pseudo-insideout/releases/latest)
+[![CI](https://github.com/E4P-ENTMT/dsh-pseudo-insideout/actions/workflows/ci.yml/badge.svg)](https://github.com/E4P-ENTMT/dsh-pseudo-insideout/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+
 给 DeepSeek Harness（DSH）的记忆插件。让对话中的偏好与经历成为后续交流的参考，并在控制台查看、修订、导入或封存这些记忆。
 
-[安装](#安装) · [第一次使用](#第一次使用) · [日常操作](#日常操作) · [常见问题](#常见问题) · [完整使用指南](docs/usage.md)
+[下载安装包](https://github.com/E4P-ENTMT/dsh-pseudo-insideout/releases/download/v0.0.1/dsh-pseudo-insideout-0.0.1.tgz) · [安装](#安装) · [第一次使用](#第一次使用) · [日常操作](#日常操作) · [常见问题](#常见问题) · [更新记录](CHANGELOG.md)
 
 ## 安装
 
-使用前准备好 **Node.js ≥24.9.0** 和 DSH **Web profile**。支持的 DSH 版本为 **`0.2.1-rc.1` 至 `0.2.1-rc.5`、`0.2.2-alpha.2`**。控制台仅支持本机访问，Desktop 原生壳尚未验证。
+Web profile 要求 **Node.js ≥24.9.0**；支持的 DSH 版本为 **`0.2.1-rc.1` 至 `0.2.1-rc.5`、`0.2.2-alpha.2`、`0.2.2-alpha.3`、`0.2.2-rc.1`**。也已在 **macOS arm64 的 Desktop `0.2.2-rc.1`** 完成基础功能实测，范围见[桌面版验收](docs/desktop-validation.md)。控制台仅支持本机访问。
 
-当前插件版本为 `0.0.1`，尚未发布到 npm。在下载或克隆的仓库目录中生成安装包：
+当前版本 **[v0.0.1](https://github.com/E4P-ENTMT/dsh-pseudo-insideout/releases/tag/v0.0.1)** 通过 GitHub Release 分发，尚未发布到 npm。直接安装 `.tgz` 附件即可，无需克隆仓库、编译或安装开发依赖。
 
-```sh
-npm ci --ignore-scripts
-npm pack
+### Desktop
+
+打开 **插件 → 添加插件**，粘贴以下地址，点击安装并启用：
+
+```text
+https://github.com/E4P-ENTMT/dsh-pseudo-insideout/releases/download/v0.0.1/dsh-pseudo-insideout-0.0.1.tgz
 ```
 
-将生成的包安装到 DSH。下面以名为 `web` 的 Web profile 为例；如果你的 profile 名不同，请替换 `web`：
+网络不便时，可先[下载安装包](https://github.com/E4P-ENTMT/dsh-pseudo-insideout/releases/download/v0.0.1/dsh-pseudo-insideout-0.0.1.tgz)，再填写下载文件的绝对路径。无需解压，也不要将 GitHub 自动生成的 Source code 源码压缩包当作安装附件。
+
+### Web profile
+
+下面以名为 `web` 的 profile 为例；如果你的 profile 名不同，请替换 `web`：
 
 ```sh
-dsh plugin --profile web add "$(pwd)/dsh-pseudo-insideout-0.0.1.tgz"
+dsh plugin --profile web add https://github.com/E4P-ENTMT/dsh-pseudo-insideout/releases/download/v0.0.1/dsh-pseudo-insideout-0.0.1.tgz
 ```
 
-如果已有 `.tgz` 安装包，可跳过打包步骤，将命令中的路径换成该文件的绝对路径。
+也可将 URL 换成已下载 `.tgz` 的绝对路径。Release 附带 [SHA256SUMS](https://github.com/E4P-ENTMT/dsh-pseudo-insideout/releases/download/v0.0.1/SHA256SUMS) 和[独立安装指南](INSTALL.md)。需要从源码验证或打包时，见[开发安装](docs/06-installation.md#从源码验证与打包)。
 
 安装后重启对应的 DSH profile；尚未运行时可直接启动：
 
@@ -33,7 +44,7 @@ dsh plugin --profile web add "$(pwd)/dsh-pseudo-insideout-0.0.1.tgz"
 dsh --profile web
 ```
 
-在 DSH 设置中打开 **记忆总部 · Pseudo Inside Out**。也可以在 DSH 当前的本机地址后加上 `/pseudo-insideout/` 打开控制台。升级或卸载方法见[安装维护手册](docs/06-installation.md#停用卸载与升级)。
+点击 DSH 主窗口左侧栏的 **记忆总部**，直接在主内容区打开控制台。设置中的 **记忆总部 · Pseudo Inside Out** 入口仍可使用。Web profile 也可以在当前本机地址后加上 `/pseudo-insideout/` 打开。Desktop 可在「插件」中添加本地安装包，详见[安装维护手册](docs/06-installation.md#desktop-安装)。
 
 ## 第一次使用
 
@@ -41,13 +52,27 @@ dsh --profile web
 2. **确认记忆已开启。** 在控制台选择对应记忆空间，进入「总部」的「会话工作台」，选定会话并点击「切换会话」，确认显示「当前生效：开启」。如果空间已暂停，先点击「恢复此记忆空间」。
 3. **完成一轮对话。** 例如告诉 DSH：「我喜欢简洁的回答，解释代码时先给结论。」等待回复正常结束。
 4. **查看保存结果。** 回到控制台点击右上角「刷新数据」，打开「记忆大厅」，点击新记忆，核对原始经历、来源会话与提炼依据；需要更正时可以修订。
-5. **试一次召回。** 在同一会话继续问：「你还记得我喜欢怎样的回答吗？」完成后刷新控制台，到「运行与设置」的「按轮回应依据」中选定会话，查看这条记忆是否进入本轮上下文。
+5. **试一次跨会话召回。** 在同一工作区、同一角色下新建会话，问：「你还记得我喜欢怎样的回答吗？」完成后刷新控制台，到「运行与设置」的「按轮回应依据」中选定新会话，查看这条记忆是否进入本轮上下文。
 
-之后正常聊天即可。记忆默认按会话隔离，切换到另一个会话后，如需沿用旧记忆，请通过下方的导入操作明确选择。
+之后正常聊天即可。自动记忆默认供同一工作区、同一角色的所有会话召回，重启后仍保留。需要跨工作区和角色使用时，可开启下述「全局记忆」；不同 profile 始终隔离。可在「运行与设置」将「新对话记忆的可见范围」改为「仅来源会话」。手动设为私有、导入的记录及依赖私有背景的提炼仍按原范围使用；需要时可显式导入到另一个会话。
+
+升级时会一次性迁移旧版中未手动修订、来源可核对、无私有证据依赖的活跃自动记忆，保留原文、ID 和来源；封存与回收箱不迁移。详细边界见[跨会话记忆](docs/usage.md#跨会话记忆)。
 
 辅助提炼和语义检索复用 DSH 的模型与凭据，可能产生额外模型费用，无需另填 API 密钥。模型不可用时会回退本地规则；只使用本地记忆的方法见[关闭辅助模型调用](docs/06-installation.md#辅助模型调用与关闭方式)。
 
 ## 日常操作
+
+### 颜色主题与显示方式
+
+点击右上角 **主题**，可选择 **星云紫、深海蓝、松林绿、晨光白、雾月灰**，或选择 **跟随系统**。切换立即生效，并记住当前浏览器或桌面窗口的选择；还可选舒适／紧凑密度。入口也位于「运行与设置 → 颜色与外观」。
+
+首页将开关收在「记忆与共享」中，点击可展开。记忆大厅提供时间线、卡片和列表，并记住浏览方式；人物、情绪与日期位于「更多筛选」，已应用的筛选条件可逐个移除。
+
+### 全局记忆（可选）
+
+在「总部」展开「记忆与共享」，或进入「运行与设置」，找到 **全局记忆** 卡片，打开 **跨工作区和角色共享记忆**，点击 **保存全局记忆设置**。默认关闭；开启后，同一 DSH profile 内的不同工作区、不同角色可召回彼此的共享活跃记忆，重启后仍保持设置。
+
+记忆留在原空间，不重复复制。会话私有、封存、回收箱、虚构记录以及暂停的空间或关闭的来源会话不参与共享；角色身份、人格岛和工作目标仍各自独立。关闭开关会停止新的跨空间引用，不删除记忆，也不撤回已进入对话历史的内容。详细规则见[全局记忆](docs/usage.md#全局记忆)。
 
 ### 开启或关闭记忆
 
@@ -98,7 +123,7 @@ dsh --profile web
 | 对话后没有新记忆 | 先点击「刷新数据」，再确认会话已开启、空间未暂停，「运行与设置」中已开启「捕获新记忆」；取消或失败的回合不会保存为完整经历，跳过原因可查「操作日志」 |
 | 有记忆，但回答没有用上 | 确认会话和记忆空间选对、记忆仍处于活跃状态；查看「按轮回应依据」中的入选记录与未入选原因 |
 | 导入预览失效或来源有变化 | 重新生成预览，再勾选提交 |
-| 想保留本地记忆，但不产生额外模型调用 | 同时关闭宿主的 `analyzeTurns` 和各空间的「允许受控语义检索」，见[配置步骤](docs/06-installation.md#辅助模型调用与关闭方式) |
+| 想保留本地记忆，但不产生额外模型调用 | 在运行设置中关闭当前空间的「允许辅助模型调用」，见[配置步骤](docs/06-installation.md#辅助模型调用与关闭方式) |
 
 数据保存在本机。升级、迁移或备份前，先阅读[数据位置](docs/06-installation.md#数据位置与隔离)和[备份与恢复](docs/06-installation.md#备份与恢复)；整个 profile 的备份需要包含默认开关、空间目录及活跃与封存数据。
 
@@ -126,8 +151,8 @@ node scripts/serve.js --data-dir .insideout-demo --port 3089 --demo
 - [完整使用指南](docs/usage.md)：导入、档案、情绪、人格岛与开关的详细规则。
 - [安装维护手册](docs/06-installation.md)：配置、停用、卸载、升级和备份恢复。
 - [文档导航](docs/README.md)：架构、API、设计记录与开发说明。
-- [兼容性与验收](docs/host-validation.md#宿主版本矩阵2026-10-31)：各 DSH 版本的验证结果与未测范围。
+- [兼容性与验收](docs/host-validation.md#宿主版本矩阵2026-11-05)：各 DSH 版本的验证结果与未测范围。
 
-参与开发时，运行 `npm test` 检查代码，运行 `npm run pack:check` 检查打包内容。
+参与开发时，运行 `npm test` 检查代码，运行 `npm run pack:check` 检查打包内容。维护发布时，`npm run release:pack` 生成安装包、指南与校验清单；[发布流程](docs/releasing.md)说明 Tag、CI 和 GitHub Release 的对应关系。
 
 许可证：[MIT](LICENSE)。项目借用 Inside Out 的结构比喻，没有使用电影角色和素材。

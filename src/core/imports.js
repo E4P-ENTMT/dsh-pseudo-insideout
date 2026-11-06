@@ -78,7 +78,7 @@ export function installImportMethods(Service, ErrorClass) {
         if (!memory || memory.trashedAt) fail('IMPORT_SOURCE_CHANGED', '所选记录或依赖已封存、删除或不存在，请重新选择', 409);
         records.set(currentId, memory);
         if (records.size > 2000) fail('IMPORT_DEPENDENCY_LIMIT', '所选记录的依赖超过2000条，无法完整预览', 413);
-        const dependencies = [...(memory.sourceIds ?? []), ...(memory.analysisEvidenceIds ?? []), ...(memory.interpretations ?? []).flatMap(item => item.evidenceIds ?? [])];
+        const dependencies = this._memoryEvidenceIds(memory);
         for (const dependency of dependencies) { text(dependency, '依赖标识'); if (!records.has(dependency)) pending.push(dependency); }
       }
       return records;

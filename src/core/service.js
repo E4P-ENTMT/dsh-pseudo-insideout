@@ -2,17 +2,19 @@ import { DatabaseSync } from 'node:sqlite';
 import { mkdirSync, lstatSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { randomUUID, createHash } from 'node:crypto';
-import { analyzeLocalTurn, semanticSimilarity, summarizeEvidence, moodGuidance, inferQueryFilters } from './intelligence.js';
+import { analyzeLocalTurn, semanticFeatures, semanticFeatureSimilarity, summarizeEvidence, moodGuidance, inferQueryFilters } from './intelligence.js';
 import { installImportMethods } from './imports.js';
+import { validStoredMemory } from './record-validation.js';
+import { migrateCapturedMemoryScope } from './capture-scope.js';
 
 export const EMOTIONS = ['joy', 'sadness', 'fear', 'anger', 'disgust', 'curiosity'];
 export const DEFAULT_CONFIG = Object.freeze({
-  enabled: true, captureEnabled: true, moodEnabled: true, dreamEnabled: false,
+  enabled: true, captureEnabled: true, captureVisibility: 'workspace', moodEnabled: true, dreamEnabled: false,
   archiveAfterDays: 90, halfLifeDays: 30, maxContextChars: 2400,
   maxRecallItems: 6, dailyCaptureLimit: 100, minConfidence: 0.7,
   emotionHalfLifeHours: 3, persona: '', identity: '',
   quietHours: { start: 22, end: 8 }, proactiveEnabled: false,
-  proactiveIntervalHours: 24, timeZone: 'Asia/Shanghai', semanticEnabled: true,
+  proactiveIntervalHours: 24, timeZone: 'Asia/Shanghai', semanticEnabled: true, modelEnabled: true,
 });
 const KINDS = ['episode', 'fact', 'preference', 'commitment', 'reflection'];
 const SOURCE_TYPES = ['user', 'observed', 'assistant', 'import', 'model'];
@@ -74,12 +76,13 @@ export function tokenize(value) {
 }
 
 export class InsideOutService {
-  constructor({ dataDir, clock = () => new Date(), runtime = {}, defaults }) {
+  constructor({ dataDir, clock = () => new Date(), runtime = {}, defaults, globalMemory }) {
     if (!dataDir) fail('INVALID_INPUT', '必须指定独立数据目录');
     this.dataDir = resolve(dataDir); this.clock = clock;
     this.runtime = { mode: 'standalone', connected: false, ...runtime };
-    this.cache = new Map(); this.depth = 0; this.archiveAttached = false; this.corruptIds = new Set();
+    this.cache = new Map(); this.depth = 0; this.archiveAttached = false; this.corruptIds = new Set(); this.searchFeatures = new Map(); this.searchFeatureBytes = 0;
     this.defaults = defaults; this.policyListeners = new Set(); this.importPreviews = new Map(); this.defaultVersion = null;
+    this.globalMemory = globalMemory; this.globalStamp = null;
     safeDirectory(this.dataDir);
     safeDirectory(join(this.dataDir, 'active'));
     safeDirectory(join(this.dataDir, 'archive'));
@@ -93,6 +96,18 @@ export class InsideOutService {
     this.db.exec(`
       CREATE TABLE IF NOT EXISTS memories (id TEXT PRIMARY KEY, data TEXT NOT NULL);
       CREATE VIRTUAL TABLE IF NOT EXISTS search USING fts5(id UNINDEXED, tokens);
+      CREATE TABLE IF NOT EXISTS search_dirty (id TEXT PRIMARY KEY);
+      CREATE TABLE IF NOT EXISTS search_features (id TEXT PRIMARY KEY, data TEXT NOT NULL);
+      CREATE TRIGGER IF NOT EXISTS search_memory_insert AFTER INSERT ON memories BEGIN
+        INSERT OR REPLACE INTO search_dirty VALUES (new.id);
+      END;
+      CREATE TRIGGER IF NOT EXISTS search_memory_update AFTER UPDATE ON memories BEGIN
+        INSERT OR REPLACE INTO search_dirty VALUES (old.id);
+        INSERT OR REPLACE INTO search_dirty VALUES (new.id);
+      END;
+      CREATE TRIGGER IF NOT EXISTS search_memory_delete AFTER DELETE ON memories BEGIN
+        INSERT OR REPLACE INTO search_dirty VALUES (old.id);
+      END;
       CREATE TABLE IF NOT EXISTS catalog (id TEXT PRIMARY KEY, tier TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, data TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS logs (seq INTEGER PRIMARY KEY AUTOINCREMENT, id TEXT UNIQUE, at TEXT, action TEXT, targets TEXT, details TEXT);
@@ -103,20 +118,54 @@ export class InsideOutService {
       CREATE TABLE IF NOT EXISTS grants (id TEXT PRIMARY KEY, memory TEXT NOT NULL, session TEXT NOT NULL, expires TEXT NOT NULL, turn TEXT);
       CREATE TABLE IF NOT EXISTS dedup (key TEXT PRIMARY KEY, memory TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS import_access (memory TEXT NOT NULL, session TEXT NOT NULL, at TEXT NOT NULL, PRIMARY KEY(memory,session));
+      CREATE TABLE IF NOT EXISTS recall_revision (id INTEGER PRIMARY KEY CHECK(id=1), version INTEGER NOT NULL);
+      INSERT OR IGNORE INTO recall_revision VALUES (1,0);
+      CREATE TRIGGER IF NOT EXISTS recall_memory_insert AFTER INSERT ON memories BEGIN
+        UPDATE recall_revision SET version=version+1 WHERE id=1;
+      END;
+      CREATE TRIGGER IF NOT EXISTS recall_memory_update AFTER UPDATE ON memories BEGIN
+        UPDATE recall_revision SET version=version+1 WHERE id=1;
+      END;
+      CREATE TRIGGER IF NOT EXISTS recall_memory_delete AFTER DELETE ON memories BEGIN
+        UPDATE recall_revision SET version=version+1 WHERE id=1;
+      END;
+      CREATE TRIGGER IF NOT EXISTS recall_policy_insert AFTER INSERT ON settings
+        WHEN new.key='config' OR new.key LIKE 'sessionMemory:%' BEGIN
+        UPDATE recall_revision SET version=version+1 WHERE id=1;
+      END;
+      CREATE TRIGGER IF NOT EXISTS recall_policy_update AFTER UPDATE ON settings
+        WHEN new.key='config' OR new.key LIKE 'sessionMemory:%' OR old.key='config' OR old.key LIKE 'sessionMemory:%' BEGIN
+        UPDATE recall_revision SET version=version+1 WHERE id=1;
+      END;
+      CREATE TRIGGER IF NOT EXISTS recall_policy_delete AFTER DELETE ON settings
+        WHEN old.key='config' OR old.key LIKE 'sessionMemory:%' BEGIN
+        UPDATE recall_revision SET version=version+1 WHERE id=1;
+      END;
       PRAGMA user_version=1;
     `);
     this.db.exec("INSERT INTO search(search,rank) VALUES('secure-delete',1)");
+    if (this._setting('searchIndexFormat') !== 3) this._tx(() => {
+      this.db.exec('INSERT OR IGNORE INTO search_dirty SELECT id FROM memories');
+      this._setting('searchIndexFormat', 3);
+    });
     if (!this._setting('config')) this._setting('config', DEFAULT_CONFIG);
+    try { migrateCapturedMemoryScope(this, evidenceHash); }
+    catch (error) { this.db.close(); throw error; }
     if (!this._setting('emotion')) this._setting('emotion', { values: zeroEmotions(), updatedAt: this.now(), confidence: 0, reason: '尚无可靠情绪评估' });
     this.dataVersion = this.db.prepare('PRAGMA data_version').get().data_version;
     this.offDefaults = defaults?.subscribe?.(() => this._policyChanged());
+    this.offGlobal = globalMemory?.register(this);
   }
   now() { return new Date(this.clock()).toISOString(); }
-  close() { this.offDefaults?.(); this.policyListeners.clear(); this.importPreviews.clear(); this.cache.clear(); this.db.close(); }
+  close() { this.offDefaults?.(); this.offGlobal?.(); this.policyListeners.clear(); this.importPreviews.clear(); this.cache.clear(); this.searchFeatures.clear(); this.db.close(); }
   updateRuntime(runtime) { this.runtime = { ...this.runtime, ...clone(runtime) }; return clone(this.runtime); }
   _syncExternal() {
     const version = this.db.prepare('PRAGMA data_version').get().data_version;
-    if (version !== this.dataVersion) { this.cache.clear(); this.dataVersion = version; }
+    if (version !== this.dataVersion) { this.cache.clear(); this.searchFeatures.clear(); this.searchFeatureBytes = 0; this.dataVersion = version; }
+    if (this.globalMemory) {
+      const stamp = this.globalMemory.stamp(this);
+      if (stamp !== this.globalStamp) { this.cache.clear(); this.globalStamp = stamp; }
+    }
   }
   peekContext({ sessionId, turnId }) { this._syncExternal(); if (!this.memoryEnabled(sessionId)) return null; return clone(this.cache.get(JSON.stringify([sessionId, turnId])) ?? null); }
   onMemoryPolicyChange(fn) { this.policyListeners.add(fn); return () => this.policyListeners.delete(fn); }
@@ -136,6 +185,25 @@ export class InsideOutService {
     });
     this._policyChanged(); return next;
   }
+  getMemorySharing() {
+    return this.defaults?.getSharing() ?? { version: 0, enabled: false, updatedAt: null, ...this._setting('memorySharing'), scope: 'standalone' };
+  }
+  updateMemorySharing({ expectedVersion, enabled }) {
+    if (typeof enabled !== 'boolean') fail('INVALID_INPUT', '全局记忆开关必须为布尔值');
+    if (this.defaults) return this.defaults.updateSharing({ expectedVersion, enabled });
+    const next = this._tx(() => {
+      const current = this.getMemorySharing(); this._checkVersion(current, expectedVersion);
+      const value = { ...current, version: current.version + 1, enabled, updatedAt: this.now() };
+      this._setting('memorySharing', value); this._log('memory.sharing-updated', [], { enabled }); return value;
+    });
+    this._policyChanged(); return next;
+  }
+  getRecallMemory(memoryId, { sessionId }) {
+    if (!this.memoryEnabled(sessionId)) return null;
+    if (memoryId.startsWith('global:')) return this.globalMemory?.resolve(this, memoryId) ?? null;
+    const memory = this._raw(memoryId);
+    return memory && this._visible(memory, sessionId) && !memory.fictional && this._evidenceValid(this._memoryEvidenceIds(memory), sessionId) ? memory : null;
+  }
   registerSession({ sessionId, title }) {
     str(sessionId, 'sessionId', 200, false);
     return this._tx(() => {
@@ -151,7 +219,7 @@ export class InsideOutService {
     const effectiveEnabled = scopeEnabled && (local.override === 'inherit' ? global.enabled : local.override === 'on');
     return { ...local, sessionId, defaultEnabled: global.enabled, defaultVersion: global.version, scopeEnabled, effectiveEnabled,
       reason: !scopeEnabled ? '当前记忆空间已暂停' : local.override === 'inherit' ? `继承全局默认：${global.enabled ? '开启' : '关闭'}` : `本会话单独${local.override === 'on' ? '开启' : '关闭'}`,
-      stamp: `${local.override === 'inherit' ? global.version : 'override'}:${local.version}:${this._setting('scopePolicyVersion') ?? 0}:${scopeEnabled ? 1 : 0}` };
+      stamp: `${local.override === 'inherit' ? global.version : 'override'}:${local.version}:${this._setting('scopePolicyVersion') ?? 0}:${scopeEnabled ? 1 : 0}:sharing-${this.getMemorySharing().version}` };
   }
   memoryEnabled(sessionId) { return this.getSessionMemory({ sessionId }).effectiveEnabled; }
   _captureKey(sessionId, turnId) { return `capture:${JSON.stringify([sessionId, turnId])}`; }
@@ -205,33 +273,124 @@ export class InsideOutService {
     } finally { this.archiveAttached = false; this.db.exec('DETACH DATABASE cold'); }
   }
   _table(tier) { return tier === 'active' ? 'main' : 'cold'; }
-  _decode(row) {
+  _decode(row, tier = 'active') {
     try {
       const m = JSON.parse(row.data);
-      if (!m || m.id !== row.id || typeof m.content !== 'string' || typeof m.title !== 'string' || !m.source || !Array.isArray(m.sourceIds) || !Array.isArray(m.tags) || !Array.isArray(m.interpretations)) throw new Error('Bad record');
+      if (!validStoredMemory(m, row.id) || m.tier !== tier) throw new Error('Bad record');
       this.corruptIds.delete(row.id); return m;
     } catch { this.corruptIds.add(row.id); return null; }
   }
   _raw(id, tier = 'active') {
     const row = this.db.prepare(`SELECT id,data FROM ${this._table(tier)}.memories WHERE id=?`).get(id);
     if (!row) return null;
-    const memory = this._decode(row);
+    const memory = this._decode(row, tier);
     if (!memory) fail('CORRUPT_RECORD', '该记录格式损坏，原始字节已保留；请先备份再修复', 409, { id });
     return memory;
   }
-  _all(tier = 'active') { return this.db.prepare(`SELECT id,data FROM ${this._table(tier)}.memories`).all().map(r => this._decode(r)).filter(Boolean); }
+  _all(tier = 'active') { return this.db.prepare(`SELECT id,data FROM ${this._table(tier)}.memories`).all().map(r => this._decode(r, tier)).filter(Boolean); }
+  _features(memory) {
+    // Foreign records must never leave derived text in this space's cache/index.
+    if (memory.globalOrigin) return { tokens: new Set(tokenize([memory.title, memory.content, ...memory.tags, ...memory.entities].join(' '))), semantic: semanticFeatures(memory) };
+    // Bound retained text and features. Compare content, not just version: repairs
+    // and another SQLite connection may alter bytes without incrementing it.
+    const signature = JSON.stringify([memory.title, memory.content, memory.tags, memory.entities, memory.semanticKeys, memory.fictional]);
+    const known = this.searchFeatures.get(memory.id);
+    if (known?.signature === signature) return known;
+    if (known) { this.searchFeatureBytes -= known.bytes; this.searchFeatures.delete(memory.id); }
+    let features;
+    // Persist only derived token sets and a fingerprint, avoiding expensive body
+    // tokenization after restart. Malformed/stale derived data is rebuildable.
+    if (memory.tier === 'active') try {
+      const stored = JSON.parse(this.db.prepare('SELECT data FROM search_features WHERE id=?').get(memory.id)?.data ?? 'null');
+      const stringArray = value => Array.isArray(value) && value.every(token => typeof token === 'string');
+      if (stored?.fingerprint === createHash('sha256').update(signature).digest('hex')
+        && [stored.tokens, stored.semantic?.keys, stored.semantic?.tokens].every(stringArray)
+        && typeof stored.semantic.empty === 'boolean' && typeof stored.semantic.fictional === 'boolean'
+        && [null, 'positive', 'negative'].includes(stored.semantic.stance)) {
+        features = { signature, tokens: new Set(stored.tokens), semantic: { ...stored.semantic, keys: new Set(stored.semantic.keys), tokens: new Set(stored.semantic.tokens) } };
+      }
+    } catch {}
+    if (!features) {
+      const text = [memory.title, memory.content, ...memory.tags, ...memory.entities].join(' ');
+      features = { signature, tokens: new Set(tokenize(text)), semantic: semanticFeatures(memory) };
+    }
+    const bytes = features.bytes = signature.length * 2 + [...features.tokens, ...features.semantic.tokens, ...features.semantic.keys].reduce((sum, token) => sum + token.length * 2 + 48, 0);
+    while (this.searchFeatures.size && (this.searchFeatures.size >= 4096 || this.searchFeatureBytes + bytes > 32 * 1024 * 1024)) {
+      const key = this.searchFeatures.keys().next().value;
+      this.searchFeatureBytes -= this.searchFeatures.get(key).bytes; this.searchFeatures.delete(key);
+    }
+    if (bytes <= 32 * 1024 * 1024) { this.searchFeatures.set(memory.id, features); this.searchFeatureBytes += bytes; }
+    return features;
+  }
+  _forgetFeatures(id) {
+    const known = this.searchFeatures.get(id);
+    if (known) this.searchFeatureBytes -= known.bytes;
+    this.searchFeatures.delete(id);
+  }
+  _conceptToken(key) { return `insideoutconcept${createHash('sha256').update(key).digest('hex').slice(0, 16)}`; }
+  _indexTokens(memory) {
+    const features = this._features(memory);
+    return [...new Set([...features.tokens, ...features.semantic.tokens, ...[...features.semantic.keys].map(key => this._conceptToken(key))])].join(' ');
+  }
+  _persistFeatures(memory) {
+    const features = this._features(memory);
+    const value = { fingerprint: createHash('sha256').update(features.signature).digest('hex'), tokens: [...features.tokens],
+      semantic: { ...features.semantic, keys: [...features.semantic.keys], tokens: [...features.semantic.tokens] } };
+    this.db.prepare('INSERT OR REPLACE INTO search_features VALUES (?,?)').run(memory.id, JSON.stringify(value));
+  }
+  _refreshSearchIndex() {
+    if (!this.db.prepare('SELECT 1 FROM search_dirty LIMIT 1').get()) return;
+    // Triggers also cover writes from older plugin versions and direct repairs.
+    // A transaction keeps the derived index and its dirty queue consistent.
+    this._tx(() => {
+      const pending = this.db.prepare('SELECT d.id,m.data FROM search_dirty d LEFT JOIN memories m ON m.id=d.id').all();
+      const remove = this.db.prepare('DELETE FROM search WHERE id=?');
+      const insert = this.db.prepare('INSERT INTO search(id,tokens) VALUES (?,?)');
+      for (const row of pending) {
+        remove.run(row.id);
+        const memory = row.data == null ? null : this._decode(row);
+        if (memory) { insert.run(row.id, this._indexTokens(memory)); this._persistFeatures(memory); }
+        else { this._forgetFeatures(row.id); this.db.prepare('DELETE FROM search_features WHERE id=?').run(row.id); if (row.data == null) this.corruptIds.delete(row.id); }
+      }
+      this.db.exec('DELETE FROM search_dirty');
+    });
+  }
+  _matchedActiveIds(query, features, semanticEnabled, hits = []) {
+    this._refreshSearchIndex();
+    const terms = [...new Set([...tokenize(query), ...(semanticEnabled ? [...features.tokens, ...[...features.keys].map(key => this._conceptToken(key))] : [])])];
+    const ids = new Set(hits);
+    const statement = this.db.prepare('SELECT id FROM search WHERE search MATCH ?');
+    for (let start = 0; start < terms.length; start += 128) {
+      const match = terms.slice(start, start + 128).map(term => `"${term.replaceAll('"', '""')}"`).join(' OR ');
+      for (const row of statement.all(match)) ids.add(row.id);
+    }
+    return ids;
+  }
+  _activeByIds(ids) {
+    const selected = [...ids], result = [];
+    for (let start = 0; start < selected.length; start += 256) {
+      const batch = selected.slice(start, start + 256);
+      for (const row of this.db.prepare(`SELECT id,data FROM memories WHERE id IN (${batch.map(() => '?').join(',')})`).all(...batch)) {
+        const memory = this._decode(row); if (memory) result.push(memory);
+      }
+    }
+    return result;
+  }
   _save(memory) {
     const table = this._table(memory.tier);
     this.db.prepare(`INSERT OR REPLACE INTO ${table}.memories VALUES (?,?)`).run(memory.id, JSON.stringify(memory));
     this.db.prepare(`DELETE FROM ${table}.search WHERE id=?`).run(memory.id);
-    this.db.prepare(`INSERT INTO ${table}.search (id,tokens) VALUES (?,?)`).run(memory.id, tokenize([memory.title, memory.content, ...memory.tags, ...memory.entities].join(' ')).join(' '));
+    this.db.prepare(`INSERT INTO ${table}.search (id,tokens) VALUES (?,?)`).run(memory.id, this._indexTokens(memory));
+    if (memory.tier === 'active') { this._persistFeatures(memory); this.db.prepare('DELETE FROM search_dirty WHERE id=?').run(memory.id); }
     this.db.prepare('INSERT OR REPLACE INTO catalog VALUES (?,?)').run(memory.id, memory.tier);
     return memory;
   }
   _removeRow(id, tier) {
+    this._forgetFeatures(id);
     const table = this._table(tier);
     this.db.prepare(`DELETE FROM ${table}.search WHERE id=?`).run(id);
     this.db.prepare(`DELETE FROM ${table}.memories WHERE id=?`).run(id);
+    if (tier === 'active') { this.db.prepare('DELETE FROM search_dirty WHERE id=?').run(id); this.db.prepare('DELETE FROM search_features WHERE id=?').run(id); }
   }
   _log(action, ids = [], details = {}) {
     this.db.prepare('INSERT INTO logs(id,at,action,targets,details) VALUES(?,?,?,?,?)').run(id('log'), this.now(), action, JSON.stringify(ids), JSON.stringify(details));
@@ -245,14 +404,30 @@ export class InsideOutService {
     if (!Number.isInteger(version) || item.version !== version) fail('VERSION_CONFLICT', '内容已变化，请刷新后再操作', 409, { currentVersion: item.version });
   }
   _visible(memory, sessionId) { return memory.visibility === 'workspace' || memory.source.sessionId === sessionId || Boolean(sessionId && this.db.prepare('SELECT 1 FROM import_access WHERE memory=? AND session=?').get(memory.id, sessionId)); }
-  _evidenceValid(ids, sessionId) {
-    return ids.every(id => {
-      try { const m = this._raw(id); return m && !m.fictional && (!sessionId || this._visible(m, sessionId)); }
-      catch (error) { if (error.code === 'CORRUPT_RECORD') return false; throw error; }
-    });
+  _memoryEvidenceIds(memory) {
+    return [...new Set([...memory.sourceIds, ...(memory.analysisEvidenceIds ?? []), ...memory.interpretations.flatMap(item => item.evidenceIds)])].filter(id => id !== memory.id);
+  }
+  _evidenceValid(ids, sessionId, { shared = false, lookup = id => this._raw(id) } = {}) {
+    const pending = [...ids], seen = new Set();
+    while (pending.length) {
+      const id = pending.pop(); if (seen.has(id)) continue;
+      seen.add(id);
+      try {
+        const memory = lookup(id);
+        if (!memory || memory.fictional || memory.trashedAt || (shared && memory.visibility !== 'workspace') || (sessionId && !this._visible(memory, sessionId))) return false;
+        pending.push(...this._memoryEvidenceIds(memory));
+      } catch (error) { if (error.code === 'CORRUPT_RECORD') return false; throw error; }
+    }
+    return true;
   }
   _sourceFingerprint(memory) {
     return createHash('sha256').update(JSON.stringify([memory.content, memory.visibility, memory.source.sessionId, memory.fictional, memory.kind, memory.subject ?? 'user', memory.tags, memory.entities, memory.semanticKeys ?? [], memory.profileFacet ?? null, memory.dueAt ?? null])).digest('hex');
+  }
+  _analysisFingerprint(memory) {
+    // Cover the extra fields exposed by analysisContext, independently of the
+    // existing island fingerprint format. Archive/restore version bumps alone
+    // do not change the material that was actually sent to the model.
+    return createHash('sha256').update(JSON.stringify([this._sourceFingerprint(memory), memory.title, memory.eventAt, memory.importance, memory.source.type, memory.importOrigin?.kind ?? null])).digest('hex');
   }
   _archiveArtifact(value, kind) {
     if (!this.archiveAttached) fail('TRANSACTION_ORDER', '派生历史必须与档案事务一同保存', 500);
@@ -265,35 +440,43 @@ export class InsideOutService {
     this.db.prepare('INSERT INTO cold.artifacts VALUES (?,?)').run(artifactId, JSON.stringify({ ...value, artifactOf: value.id, artifactKind: kind, artifactAt: this.now(), sourceFingerprints: { ...fingerprints, ...(value.sourceFingerprints ?? {}) } })); return artifactId;
   }
   _retireAnalysisMetadata(ids, { erase = false } = {}) {
-    const affected = new Set(ids); let changed = true;
+    const seeds = new Set(ids), affected = new Set(ids); let changed = true;
     while (changed) {
       changed = false;
       for (const memory of [...this._all(), ...(erase ? this._all('archive') : [])]) {
-        if (!(memory.analysisEvidenceIds ?? []).some(v => affected.has(v))) continue;
-        if (!erase) this._archiveArtifact({ id: memory.id, version: memory.version, evidenceIds: [...new Set([memory.id, ...memory.analysisEvidenceIds])], metadata: { kind: memory.kind, importance: memory.importance, tags: memory.tags, entities: memory.entities, semanticKeys: memory.semanticKeys, profileFacet: memory.profileFacet, dueAt: memory.dueAt, eventAt: memory.eventAt, extraction: memory.extraction, emotions: memory.emotions, core: memory.core }, revisions: memory.revisions }, 'analysis-metadata');
-        let raw = memory.content;
-        try { const original = JSON.parse(memory.original); if (typeof original.user === 'string') raw = original.user; } catch {}
-        const local = analyzeLocalTurn(raw, { now: memory.createdAt, timeZone: this.getConfig().timeZone });
-        for (const field of ['kind', 'importance', 'tags', 'entities', 'semanticKeys', 'profileFacet', 'dueAt']) memory[field] = local[field];
-        memory.eventAt = local.eventAt ?? memory.createdAt; memory.core = false; memory.emotions = zeroEmotions();
-        Object.assign(memory, memory.manualMetadata ?? {});
-        memory.extraction = { method: 'local-rules-after-invalidation', reason: local.reason };
-        memory.analysisEvidenceIds = []; memory.analysisEvidenceVersions = {};
-        for (const revision of memory.revisions) for (const field of ['kind', 'importance', 'tags', 'entities', 'semanticKeys', 'profileFacet', 'dueAt']) delete revision[field];
+        // Body derivations can be removed as a whole. An interpretation belongs
+        // to an independent original: erase only that interpretation on deletion.
+        // On archive, retain its complete record in the separate archive store.
+        const bodyReferences = [...memory.sourceIds, ...(!erase ? memory.interpretations.flatMap(item => item.evidenceIds) : [])];
+        const retireBody = (erase || !affected.has(memory.id)) && bodyReferences.some(id => affected.has(id) && (erase || !seeds.has(id)));
+        if (retireBody) {
+          const sourceTier = memory.tier;
+          if (erase) { this._removeRow(memory.id, sourceTier); this.db.prepare('DELETE FROM catalog WHERE id=?').run(memory.id); }
+          else {
+            memory.tier = 'archive'; memory.archivedAt = this.now(); memory.archiveReason = '模型提炼的背景来源已变化，旧派生结论移入档案'; memory.version++; memory.updatedAt = this.now();
+            this._save(memory); this._removeRow(memory.id, sourceTier);
+          }
+          affected.add(memory.id); changed = true; continue;
+        }
+        const retireAnalysis = (memory.analysisEvidenceIds ?? []).some(id => affected.has(id));
+        const interpretations = erase ? memory.interpretations.filter(item => !item.evidenceIds.some(id => affected.has(id))) : memory.interpretations;
+        if (!retireAnalysis && interpretations.length === memory.interpretations.length) continue;
+        if (retireAnalysis) {
+          if (!erase) this._archiveArtifact({ id: memory.id, version: memory.version, evidenceIds: [...new Set([memory.id, ...memory.analysisEvidenceIds])], metadata: { kind: memory.kind, importance: memory.importance, tags: memory.tags, entities: memory.entities, semanticKeys: memory.semanticKeys, profileFacet: memory.profileFacet, dueAt: memory.dueAt, eventAt: memory.eventAt, extraction: memory.extraction, emotions: memory.emotions, core: memory.core }, revisions: memory.revisions }, 'analysis-metadata');
+          let raw = memory.content;
+          try { const original = JSON.parse(memory.original); if (typeof original.user === 'string') raw = original.user; } catch {}
+          const local = analyzeLocalTurn(raw, { now: memory.createdAt, timeZone: this.getConfig().timeZone });
+          for (const field of ['kind', 'importance', 'tags', 'entities', 'semanticKeys', 'profileFacet', 'dueAt']) memory[field] = local[field];
+          memory.eventAt = local.eventAt ?? memory.createdAt; memory.core = false; memory.emotions = zeroEmotions();
+          Object.assign(memory, memory.manualMetadata ?? {});
+          memory.extraction = { method: 'local-rules-after-invalidation', reason: local.reason };
+          memory.analysisEvidenceIds = []; memory.analysisEvidenceVersions = {}; memory.analysisEvidenceFingerprints = {};
+          for (const revision of memory.revisions) for (const field of ['kind', 'importance', 'tags', 'entities', 'semanticKeys', 'profileFacet', 'dueAt']) delete revision[field];
+          this._log('memory.analysis-retired', [memory.id]);
+        }
+        memory.interpretations = interpretations;
         memory.version++; memory.updatedAt = this.now(); this._save(memory); affected.add(memory.id); changed = true;
-        this._log('memory.analysis-retired', [memory.id]);
       }
-    }
-    // The raw later statement stays active; conclusions derived from its retired
-    // metadata are moved with their own dependency chain.
-    const newlyAffected = [...affected].filter(v => !ids.includes(v));
-    const derived = this._dependents(newlyAffected, [...this._all(), ...(erase ? this._all('archive') : [])], true);
-    for (const v of newlyAffected) derived.delete(v);
-    for (const dependent of derived) {
-      const sourceTier = erase ? this._tier(dependent) : 'active';
-      const memory = this._raw(dependent, sourceTier); if (!memory) continue;
-      if (erase) { this._removeRow(memory.id, sourceTier); this.db.prepare('DELETE FROM catalog WHERE id=?').run(memory.id); affected.add(memory.id); continue; }
-      memory.tier = 'archive'; memory.archivedAt = this.now(); memory.archiveReason = '模型提炼的背景来源已变化，旧派生结论移入档案'; memory.version++; memory.updatedAt = this.now(); this._save(memory); this._removeRow(memory.id, 'active'); affected.add(memory.id);
     }
     return [...affected];
   }
@@ -338,13 +521,16 @@ export class InsideOutService {
     if (erase && this.archiveAttached) for (const artifact of this.db.prepare('SELECT id,data FROM cold.artifacts').all()) {
       if (this._artifactEvidence(JSON.parse(artifact.data)).some(v => ids.includes(v))) this.db.prepare('DELETE FROM cold.artifacts WHERE id=?').run(artifact.id);
     }
+    return ids;
   }
+  getModelPolicy() { return { enabled: this.getConfig().modelEnabled, stamp: this._setting('modelPolicyVersion') ?? 0 }; }
   getConfig() { return { ...clone(DEFAULT_CONFIG), ...this._setting('config') }; }
   updateConfig(patch) {
     const next = this.getConfig();
     for (const [key, value] of Object.entries(patch)) {
       if (!(key in DEFAULT_CONFIG)) fail('INVALID_CONFIG', `未知设置 ${key}`);
       if (typeof DEFAULT_CONFIG[key] === 'boolean') { if (typeof value !== 'boolean') fail('INVALID_CONFIG', `${key} 必须是布尔值`); }
+      else if (key === 'captureVisibility') { if (!['workspace', 'session'].includes(value)) fail('INVALID_CONFIG', '自动记忆范围只能为 workspace 或 session'); }
       else if (key === 'persona' || key === 'identity') str(value, key, 2000);
       else if (key === 'timeZone') { str(value, key, 100, false); try { new Intl.DateTimeFormat('en', { timeZone: value }).format(); } catch { fail('INVALID_CONFIG', '时区无效'); } }
       else if (key === 'quietHours') { num(value?.start, 'start', 0, 23); num(value?.end, 'end', 0, 23); }
@@ -355,18 +541,23 @@ export class InsideOutService {
       }
       next[key] = clone(value);
     }
+    let scopeChanged = false, modelChanged = false;
     const changed = this._tx(() => {
+      const previous = this.getConfig();
+      scopeChanged = previous.enabled !== next.enabled || previous.captureVisibility !== next.captureVisibility;
+      modelChanged = previous.modelEnabled !== next.modelEnabled;
       this._setting('config', next); this.cache.clear();
-      if (patch.enabled !== undefined) this._setting('scopePolicyVersion', (this._setting('scopePolicyVersion') ?? 0) + 1);
+      if (modelChanged) this._setting('modelPolicyVersion', (this._setting('modelPolicyVersion') ?? 0) + 1);
+      if (scopeChanged) this._setting('scopePolicyVersion', (this._setting('scopePolicyVersion') ?? 0) + 1);
       this._log('config.updated', [], { fields: Object.keys(patch) }); return next;
     });
-    if (patch.enabled !== undefined) this._policyChanged(); return changed;
+    if (scopeChanged || modelChanged) this._policyChanged(); return changed;
   }
   state() {
     const count = tier => Number(this.db.prepare('SELECT COUNT(*) AS count FROM catalog WHERE tier=?').get(tier).count);
     const memories = this._all();
     return {
-      runtime: clone(this.runtime), config: this.getConfig(), memoryDefault: this.getMemoryDefault(),
+      runtime: clone(this.runtime), config: this.getConfig(), memoryDefault: this.getMemoryDefault(), memorySharing: this.getMemorySharing(),
       counts: { active: count('active'), archive: count('archive') - (this._setting('trashIds') ?? []).length, trash: (this._setting('trashIds') ?? []).length, core: memories.filter(m => m.core).length, pending: this.listDreams().items.filter(d => d.status === 'pending').length },
       emotion: this.emotion(), islands: this.listIslands().items,
       recentRecall: this._setting('recentRecall'), storage: { mode: 'sqlite-separated', autoDelete: false, issues: this.corruptIds.size ? [{ code: 'CORRUPT_RECORD', ids: [...this.corruptIds], message: '部分记录格式损坏，已隔离展示且保留原始字节。请先备份再修复。' }] : [] },
@@ -386,10 +577,10 @@ export class InsideOutService {
     if (entity) str(entity, '人物', 160); if (emotion && !EMOTIONS.includes(emotion)) fail('INVALID_INPUT', '情绪维度无效');
     const wantTrash = trashed === true || trashed === 'true';
     const read = () => {
-      const tokens = tokenize(q);
+      const tokens = tokenize(q), queryFeatures = semanticFeatures(q);
       const items = this._all(tier).filter(m => Boolean(m.trashedAt) === wantTrash && (!kind || m.kind === kind) && (!sessionId || this._visible(m, sessionId)) && (!(core === true || core === 'true') || m.core)
         && (!from || m.eventAt >= from) && (!to || m.eventAt < to) && (!entity || [...m.entities, m.content].some(v => v.toLowerCase().includes(entity.toLowerCase()))) && (!emotion || m.emotions[emotion] > 0)
-        && (!tokens.length || tokens.some(t => tokenize([m.title, m.content, ...m.tags, ...m.entities].join(' ')).includes(t)) || semanticSimilarity(q, m) >= 0.45)
+        && (!tokens.length || tokens.some(t => this._features(m).tokens.has(t)) || semanticFeatureSimilarity(queryFeatures, this._features(m).semantic) >= 0.45)
       ).sort((a, b) => b.eventAt.localeCompare(a.eventAt) || a.id.localeCompare(b.id));
       return { items: items.slice(Number(offset), Number(offset) + Number(limit)), total: items.length, offset: Number(offset), limit: Number(limit) };
     };
@@ -413,7 +604,7 @@ export class InsideOutService {
     const sourceIds = strings(input.sourceIds, '派生证据', 100);
     const sourceSession = str(source.sessionId ?? '', 'sessionId', 200);
     if (!this._evidenceValid(sourceIds, visibility === 'session' ? sourceSession : undefined)) fail('INVALID_EVIDENCE', '来源记忆必须仍在活跃库且可见');
-    if (visibility === 'workspace' && sourceIds.some(v => this._raw(v).visibility !== 'workspace')) fail('SCOPE_ESCALATION', '会话私有证据不能派生为共享记忆');
+    if (visibility === 'workspace' && !this._evidenceValid(sourceIds, undefined, { shared: true })) fail('SCOPE_ESCALATION', '会话私有证据不能派生为共享记忆');
     const now = this.now();
     return {
       id: id('mem'), version: 1, tier: 'active', title: str(input.title ?? content.slice(0, 40), '标题', 160, false), content,
@@ -446,14 +637,14 @@ export class InsideOutService {
     });
   }
   _revise(memory, reason) {
-    memory.revisions.push({ version: memory.version, at: this.now(), title: memory.title, content: memory.content, importance: memory.importance, tags: [...memory.tags], entities: [...memory.entities], visibility: memory.visibility, reason, author: 'user', kind: memory.kind, dueAt: memory.dueAt ?? null, profileFacet: memory.profileFacet ?? null, subject: memory.subject ?? 'user', semanticKeys: memory.semanticKeys ?? [] });
+    memory.revisions.push({ version: memory.version, at: this.now(), title: memory.title, content: memory.content, importance: memory.importance, tags: [...memory.tags], entities: [...memory.entities], visibility: memory.visibility, reason, author: 'user', kind: memory.kind, dueAt: memory.dueAt ?? null, profileFacet: memory.profileFacet ?? null, subject: memory.subject ?? 'user', semanticKeys: memory.semanticKeys ?? [], fictional: memory.fictional });
     memory.version++; memory.updatedAt = this.now();
   }
   updateMemory(memoryId, patch) {
     const tier = this._tier(memoryId);
     const update = () => this._tx(() => {
       const memory = this._raw(memoryId, tier); this._checkVersion(memory, patch.expectedVersion);
-      const allowed = ['expectedVersion', 'title', 'content', 'importance', 'tags', 'entities', 'visibility', 'reason', 'dueAt', 'profileFacet', 'semanticKeys', 'subject'];
+      const allowed = ['expectedVersion', 'title', 'content', 'importance', 'tags', 'entities', 'visibility', 'reason', 'dueAt', 'profileFacet', 'semanticKeys', 'subject', 'fictional'];
       if (Object.keys(patch).some(k => !allowed.includes(k))) fail('IMMUTABLE_FIELD', '不能更改原文、来源或其他受保护字段');
       const reason = str(patch.reason ?? '用户修订', '修订原因', 1000, false);
       this._revise(memory, reason);
@@ -462,16 +653,17 @@ export class InsideOutService {
       if (patch.importance !== undefined) memory.importance = num(patch.importance, '重要度', 0, 1);
       if (patch.tags !== undefined) memory.tags = strings(patch.tags, '标签');
       if (patch.entities !== undefined) memory.entities = strings(patch.entities, '实体');
+      if (patch.fictional !== undefined) { if (typeof patch.fictional !== 'boolean') fail('INVALID_INPUT', '虚构标记必须为布尔值'); memory.fictional = patch.fictional; }
       if (patch.dueAt !== undefined) memory.dueAt = patch.dueAt === null ? null : dateString(patch.dueAt, '到期');
       if (patch.profileFacet !== undefined) { if (patch.profileFacet !== null && !FACETS.includes(patch.profileFacet)) fail('INVALID_FACET', '人格维度无效'); memory.profileFacet = patch.profileFacet; }
       if (patch.semanticKeys !== undefined) memory.semanticKeys = strings(patch.semanticKeys, '概念');
       if (patch.subject !== undefined) { if (!SUBJECTS.includes(patch.subject)) fail('INVALID_SUBJECT', '归属无效'); memory.subject = patch.subject; }
       if (patch.visibility !== undefined) {
         if (!['workspace', 'session'].includes(patch.visibility) || (patch.visibility === 'session' && !memory.source.sessionId)) fail('INVALID_SCOPE', '无效可见范围');
-        if (patch.visibility === 'workspace' && memory.sourceIds.some(v => !this._raw(v) || this._raw(v).visibility !== 'workspace')) fail('SCOPE_ESCALATION', '私有来源不能升级为共享');
+        if (patch.visibility === 'workspace' && !this._evidenceValid(this._memoryEvidenceIds(memory), undefined, { shared: true })) fail('SCOPE_ESCALATION', '私有来源、分析背景或解释证据不能升级为共享');
         memory.visibility = patch.visibility;
       }
-      for (const field of ['importance', 'tags', 'entities', 'semanticKeys', 'profileFacet', 'dueAt', 'subject']) if (patch[field] !== undefined) { memory.manualMetadata ??= {}; memory.manualMetadata[field] = memory[field]; }
+      for (const field of ['importance', 'tags', 'entities', 'semanticKeys', 'profileFacet', 'dueAt', 'subject', 'fictional']) if (patch[field] !== undefined) { memory.manualMetadata ??= {}; memory.manualMetadata[field] = memory[field]; }
       this._save(memory);
       if (tier === 'active') {
         const dependents = this._dependents([memoryId], this._all(), true); dependents.delete(memoryId);
@@ -490,11 +682,7 @@ export class InsideOutService {
     const update = () => this._tx(() => {
       const memory = this._raw(memoryId, tier); this._checkVersion(memory, input.expectedVersion);
       const evidenceIds = strings(input.evidenceIds, '解释证据', 100);
-      if (evidenceIds.some(v => {
-        if (v === memoryId) return false;
-        const evidence = this._raw(v);
-        return !evidence || evidence.fictional || (memory.visibility === 'workspace' ? evidence.visibility !== 'workspace' : !this._visible(evidence, memory.source.sessionId));
-      })) fail('INVALID_EVIDENCE', '额外证据须在活跃库且与目标记忆可见范围一致');
+      if (!this._evidenceValid(evidenceIds.filter(id => id !== memoryId), memory.visibility === 'session' ? memory.source.sessionId : undefined, { shared: memory.visibility === 'workspace' })) fail('INVALID_EVIDENCE', '额外证据须在活跃库且与目标记忆可见范围一致');
       memory.interpretations.push({ id: id('interpretation'), at: this.now(), text: str(input.text, '新理解', 4000, false), evidenceIds, evidenceHashes: Object.fromEntries(evidenceIds.filter(v => v !== memoryId).map(v => [v, evidenceHash(this._raw(v))])) });
       memory.version++; memory.updatedAt = this.now(); this._save(memory); this._invalidate([memoryId]);
       this._log('memory.interpreted', [memoryId]); return memory;
@@ -525,11 +713,17 @@ export class InsideOutService {
   }
   _validateRestore(memory, lookup = id => this._raw(id)) {
     if (memory.trashedAt) fail('TRASH_REQUIRES_UNDO', '请通过回收箱撤销移除后再恢复', 409);
-    const dependencies = [...new Set([...memory.sourceIds, ...memory.interpretations.flatMap(i => i.evidenceIds).filter(v => v !== memory.id)])];
-    if (dependencies.some(v => { const source = lookup(v); return !source || source.fictional; })) fail('ARCHIVED_DEPENDENCY', '请先恢复全部来源，或将互相引用的记录一起批量恢复', 409);
-    if (dependencies.some(v => memory.visibility === 'workspace' ? lookup(v).visibility !== 'workspace' : !this._visible(lookup(v), memory.source.sessionId))) fail('SCOPE_ESCALATION', '来源可见范围已改变，不能恢复旧派生内容', 409);
+    const dependencies = this._memoryEvidenceIds(memory);
+    if (!this._evidenceValid(dependencies, undefined, { lookup })) fail('ARCHIVED_DEPENDENCY', '请先恢复全部来源，或将互相引用的记录一起批量恢复', 409);
+    if (!this._evidenceValid(dependencies, memory.visibility === 'session' ? memory.source.sessionId : undefined, { lookup, shared: memory.visibility === 'workspace' })) fail('SCOPE_ESCALATION', '来源可见范围已改变，不能恢复旧派生内容', 409);
     const hashes = { ...memory.evidenceHashes, ...Object.assign({}, ...memory.interpretations.map(i => i.evidenceHashes ?? {})) };
     if (Object.entries(hashes).some(([source, hash]) => !lookup(source) || evidenceHash(lookup(source)) !== hash)) fail('STALE_EVIDENCE', '来源内容已修订，请建立新的解释或归纳；旧记录继续封存', 409);
+    if ((memory.analysisEvidenceIds ?? []).some(id => {
+      const source = lookup(id), fingerprint = memory.analysisEvidenceFingerprints?.[id];
+      // Old records may only have a version. Do not manufacture a fingerprint
+      // from today's source and pretend it describes the original model input.
+      return fingerprint ? this._analysisFingerprint(source) !== fingerprint : source.version !== memory.analysisEvidenceVersions?.[id];
+    })) fail('STALE_EVIDENCE', '分析背景已变化或缺少可验证版本；旧提炼继续封存', 409);
   }
   restoreMemory(memoryId, { expectedVersion }) {
     return this._archive(() => this._tx(() => {
@@ -551,22 +745,13 @@ export class InsideOutService {
         const sourceTier = this._tier(target); this._removeRow(target, sourceTier);
         this.db.prepare('DELETE FROM catalog WHERE id=?').run(target);
       }
-      // Interpretations referencing erased evidence are erased, not kept as hidden copies.
-      for (const item of all.filter(v => !affected.has(v.id))) {
-        const kept = item.interpretations.filter(i => !i.evidenceIds.some(v => affected.has(v)));
-        if (kept.length !== item.interpretations.length) { item.interpretations = kept; item.version++; this._save(item); }
-      }
-      for (const dream of this.listDreams().items) if (this._artifactEvidence(dream).some(v => affected.has(v))) this.db.prepare('DELETE FROM dreams WHERE id=?').run(dream.id);
-      for (const island of this.listIslands().items) if (this._artifactEvidence(island).some(v => affected.has(v))) this.db.prepare('DELETE FROM islands WHERE id=?').run(island.id);
-      for (const artifact of this.db.prepare('SELECT id,data FROM cold.artifacts').all()) {
-        const value = JSON.parse(artifact.data);
-        if (this._artifactEvidence(value).some(v => affected.has(v))) this.db.prepare('DELETE FROM cold.artifacts WHERE id=?').run(artifact.id);
-      }
-      this._invalidate([...affected], { erase: true });
-      this._setting('trashIds', (this._setting('trashIds') ?? []).filter(v => !affected.has(v)));
+      const invalidated = this._invalidate([...affected], { erase: true });
+      const exists = this.db.prepare('SELECT 1 FROM catalog WHERE id=?');
+      const deletedIds = invalidated.filter(id => !exists.get(id));
+      this._setting('trashIds', (this._setting('trashIds') ?? []).filter(v => !deletedIds.includes(v)));
       this._setting('emotion', { values: zeroEmotions(), updatedAt: this.now(), confidence: 0, reason: '记忆删除后已重置情绪摘要' });
-      this._log('memory.deleted', [...affected]);
-      return { deletedIds: [...affected], backupNotice: '仅清除插件当前数据库中的原文、版本及派生内容；DSH 会话历史、已导出文件、外部备份和存储设备快照不在此操作范围。' };
+      this._log('memory.deleted', deletedIds);
+      return { deletedIds, backupNotice: '仅清除插件当前数据库中的原文、版本及派生内容；DSH 会话历史、已导出文件、外部备份和存储设备快照不在此操作范围。' };
     }));
   }
   requestRecall(memoryId, { sessionId }) {
@@ -631,31 +816,37 @@ export class InsideOutService {
     num(Number(limit), 'limit', 1, 500); const usage = this._setting('modelUsage') ?? [];
     return { items: (this._setting('recalls') ?? []).filter(v => !sessionId || v.sessionId === sessionId).slice(-Number(limit)).reverse().map(v => ({ ...v, usage: usage.filter(u => u.sessionId === v.sessionId && String(u.turnId) === String(v.turnId)) })) };
   }
-  searchActive({ sessionId, query = '', from, to, entity, limit = 10, maxChars = 8000, semanticHits = [] } = {}) {
+  searchActive({ sessionId, query = '', from, to, entity, limit = 10, maxChars = 8000, semanticHits = [], includeFallback = false, includeGlobal = true } = {}) {
     str(sessionId, 'sessionId', 200, false); str(query, 'query', 64000);
     num(Number(limit), 'limit', 1, 200); num(Number(maxChars), 'maxChars', 256, 100000);
     if (!this.memoryEnabled(sessionId)) return { items: [], total: 0, usedChars: 0, limitChars: maxChars, disabled: true };
     if (from) from = dateString(from, '起始日期'); if (to) to = dateString(to, '结束日期'); if (entity) str(entity, '人物', 160);
+    const config = this.getConfig(), queryFeatures = semanticFeatures(query);
     const tokens = new Set(tokenize(query)); const hits = new Map((Array.isArray(semanticHits) ? semanticHits : []).slice(0, 200).filter(v => typeof v.id === 'string' && Number.isFinite(v.score) && v.score >= 0 && v.score <= 1).map(v => [v.id, v]));
-    const ranked = this._all().filter(m => this._visible(m, sessionId) && !m.fictional && this._evidenceValid(m.sourceIds, sessionId) && (!from || m.eventAt >= from) && (!to || m.eventAt < to) && (!entity || [...m.entities, m.content].some(v => v.toLowerCase().includes(entity.toLowerCase())))).map(m => {
-      const matched = tokenize([m.title, m.content, ...m.tags, ...m.entities].join(' ')).filter(v => tokens.has(v));
-      const lexical = matched.length / Math.max(1, tokens.size), semantic = this.getConfig().semanticEnabled ? Math.max(semanticSimilarity(query, m), hits.get(m.id)?.score ?? 0) : 0;
-      return { ...m, score: Math.max(lexical, semantic), reasons: [matched.length ? `词语命中 ${matched.slice(0, 4).join('、')}` : semantic ? hits.has(m.id) ? '模型语义匹配（候选）' : '本地概念扩展匹配' : '范围内浏览'] };
-    }).filter(m => !query.trim() || m.score > 0.15).sort((a, b) => b.score - a.score || b.importance - a.importance || b.eventAt.localeCompare(a.eventAt));
+    const matchedIds = this._matchedActiveIds(query, queryFeatures, config.semanticEnabled, hits.keys());
+    const local = (!query.trim() || includeFallback ? this._all() : this._activeByIds(matchedIds)).filter(m => this._visible(m, sessionId) && !m.fictional && this._evidenceValid(this._memoryEvidenceIds(m), sessionId));
+    const memories = [...local, ...(includeGlobal ? this.globalMemory?.list(this) ?? [] : [])];
+    const ranked = memories.filter(m => (!from || m.eventAt >= from) && (!to || m.eventAt < to) && (!entity || [...m.entities, m.content].some(v => v.toLowerCase().includes(entity.toLowerCase())))).map(m => {
+      const features = m.globalOrigin || matchedIds.has(m.id) ? this._features(m) : null;
+      const matched = features ? [...tokens].filter(v => features.tokens.has(v)) : [];
+      const lexical = matched.length / Math.max(1, tokens.size), semantic = config.semanticEnabled ? Math.max(features ? semanticFeatureSimilarity(queryFeatures, features.semantic) : 0, hits.get(m.id)?.score ?? 0) : 0;
+      return { ...m, score: Math.max(lexical, semantic), reasons: [m.globalOrigin ? '全局共享记忆' : matched.length ? `词语命中 ${matched.slice(0, 4).join('、')}` : semantic ? hits.has(m.id) ? '模型语义匹配（候选）' : '本地概念扩展匹配' : '范围内浏览'] };
+    }).filter(m => includeFallback || !query.trim() || m.score > 0.15).sort((a, b) => b.score - a.score || b.importance - a.importance || b.eventAt.localeCompare(a.eventAt));
     const items = []; let usedChars = 0;
     for (const m of ranked) {
       if (items.length >= limit) break;
       const item = { id: m.id, version: m.version, title: m.title, content: m.content, kind: m.kind, subject: m.subject ?? 'user', sourceType: m.source.type, ...(m.importOrigin?.kind === 'file' ? { sourceNotice: '外部文件参考；文件内身份及事实声明未经核验' } : {}), eventAt: m.eventAt, dueAt: m.dueAt ?? null, tags: m.tags, entities: m.entities, semanticKeys: m.semanticKeys ?? [], profileFacet: m.profileFacet ?? null, importance: m.importance, score: m.score, reasons: m.reasons, tier: 'active' };
+      if (m.globalOrigin) item.globalOrigin = m.globalOrigin;
       const room = maxChars - usedChars - JSON.stringify({ ...item, content: '' }).length - 1;
-      if (room < 40) break;
+      if (room < 40) continue;
       if (item.content.length > room) { item.content = item.content.slice(0, Math.max(0, room - 80)); item.truncated = true; }
       const chars = JSON.stringify(item).length; if (usedChars + chars > maxChars) continue;
       items.push(item); usedChars += chars;
     }
     return { items, total: ranked.length, usedChars, limitChars: maxChars };
   }
-  analysisContext({ sessionId, limit = 30, maxChars = 16000, query = '', from, to, entity } = {}) {
-    const result = this.searchActive({ sessionId, query, from, to, entity, limit, maxChars: Math.max(256, maxChars - 200) });
+  analysisContext({ sessionId, limit = 30, maxChars = 16000, query = '', from, to, entity, includeFallback = false, includeGlobal = true } = {}) {
+    const result = this.searchActive({ sessionId, query, from, to, entity, includeFallback, includeGlobal, limit, maxChars: Math.max(256, maxChars - 200) });
     if (result.disabled) return { items: [], islands: [], total: 0, usedChars: 0, limitChars: maxChars, disabled: true };
     const output = { items: result.items, islands: [], total: result.total, usedChars: 0, limitChars: maxChars };
     const size = () => JSON.stringify(output).length;
@@ -717,7 +908,7 @@ export class InsideOutService {
     if (last && Date.parse(this.now()) - Date.parse(last) < 60 * 60 * 1000) return { skipped: 'interval' };
     return this._tx(() => { const result = this.runDream(); this._setting('lastTick', this.now()); return result; });
   }
-  buildContext({ sessionId, turnId, query = '', semanticHits = [], from, to, entity }) {
+  buildContext({ sessionId, turnId, query = '', filterQuery = query, semanticHits = [], from, to, entity }) {
     this._syncExternal();
     str(sessionId, 'sessionId', 200, false); str(turnId, 'turnId', 200, false); str(query, 'query', 64000);
     const config = this.getConfig();
@@ -726,28 +917,31 @@ export class InsideOutService {
     const cacheKey = JSON.stringify([sessionId, turnId]);
     if (this.cache.has(cacheKey)) return clone(this.cache.get(cacheKey));
     this.db.prepare('INSERT OR REPLACE INTO sessions VALUES (?,?)').run(sessionId, this.now());
-    const inferred = inferQueryFilters(query, this.now(), config.timeZone); from ||= inferred.from; to ||= inferred.to; entity ||= inferred.entity;
+    str(filterQuery, 'filterQuery', 64000);
+    const inferred = inferQueryFilters(filterQuery, this.now(), config.timeZone); from ||= inferred.from; to ||= inferred.to; entity ||= inferred.entity;
     if (from) from = dateString(from, '起始日期'); if (to) to = dateString(to, '结束日期');
     if (entity) str(entity, '人物', 160);
     const workspace = this.getWorkspace({ sessionId }), mood = this.emotion();
     const semantic = new Map((Array.isArray(semanticHits) ? semanticHits : []).slice(0, 200).filter(v => typeof v.id === 'string' && Number.isFinite(v.score) && v.score >= 0 && v.score <= 1).map(v => [v.id, v]));
-    const queryTokens = new Set(tokenize(query));
-    const active = this._all().filter(m => this._visible(m, sessionId) && !m.fictional && this._evidenceValid(m.sourceIds, sessionId));
+    const queryTokens = new Set(tokenize(query)), queryFeatures = semanticFeatures(query);
+    const nowMs = Date.parse(this.now());
+    const matchedIds = this._matchedActiveIds(query, queryFeatures, config.semanticEnabled, semantic.keys());
+    const active = [...this._all().filter(m => this._visible(m, sessionId) && !m.fictional && this._evidenceValid(this._memoryEvidenceIds(m), sessionId)), ...(this.globalMemory?.list(this) ?? [])];
     const candidates = active.map(memory => {
-      const tokens = tokenize([memory.title, memory.content, ...memory.tags, ...memory.entities].join(' '));
-      const matched = tokens.filter(token => queryTokens.has(token));
+      const features = memory.globalOrigin || matchedIds.has(memory.id) ? this._features(memory) : null;
+      const matched = features ? [...queryTokens].filter(token => features.tokens.has(token)) : [];
       const lexical = matched.length / Math.max(1, queryTokens.size);
-      const meaning = config.semanticEnabled ? Math.max(semanticSimilarity(query, memory), semantic.get(memory.id)?.score ?? 0) : 0;
+      const meaning = config.semanticEnabled ? Math.max(features ? semanticFeatureSimilarity(queryFeatures, features.semantic) : 0, semantic.get(memory.id)?.score ?? 0) : 0;
       const relevance = Math.max(lexical, meaning);
       const inFilter = (!from || memory.eventAt >= from) && (!to || memory.eventAt < to) && (!entity || [...memory.entities, memory.content].some(v => v.toLowerCase().includes(entity.toLowerCase())));
       const pinned = workspace.pinnedMemoryIds.includes(memory.id);
-      const ageDays = Math.max(0, Date.parse(this.now()) - Date.parse(memory.eventAt)) / DAY;
+      const ageDays = Math.max(0, nowMs - Date.parse(memory.eventAt)) / DAY;
       const persistent = ['fact', 'preference', 'commitment'].includes(memory.kind) || memory.core;
       const freshness = persistent ? 1 : Math.pow(0.5, ageDays / config.halfLifeDays);
       const emotional = Math.max(...Object.values(memory.emotions));
       const affinity = config.moodEnabled ? EMOTIONS.reduce((sum, k) => sum + mood.values[k] * memory.emotions[k], 0) / Math.max(1, EMOTIONS.reduce((sum, k) => sum + mood.values[k], 0)) : 0;
       const score = 0.55 * relevance + 0.2 * memory.importance + 0.12 * freshness + 0.05 * emotional + 0.08 * affinity + (memory.core ? 0.15 : 0) + (pinned ? 0.5 : 0);
-      const reasons = [matched.length ? `命中 ${matched.slice(0, 4).join('、')}` : meaning > 0.15 ? semantic.has(memory.id) ? '模型语义匹配（候选）' : '本地概念扩展匹配' : pinned ? '用户固定工作记忆' : '长期事实保留位', `重要度 ${memory.importance}`, `鲜活度 ${freshness.toFixed(2)}`];
+      const reasons = [memory.globalOrigin ? '全局共享记忆' : matched.length ? `命中 ${matched.slice(0, 4).join('、')}` : meaning > 0.15 ? semantic.has(memory.id) ? '模型语义匹配（候选）' : '本地概念扩展匹配' : pinned ? '用户固定工作记忆' : '长期事实保留位', `重要度 ${memory.importance}`, `鲜活度 ${freshness.toFixed(2)}`];
       if (affinity > 0) reasons.push(`当前情绪注意权重 ${affinity.toFixed(2)}`);
       if (pinned) reasons.push('用户固定工作记忆');
       return { memory, score, matched, inFilter, eligible: inFilter && (matched.length > 0 || meaning > 0.15 || persistent || pinned || Boolean(from || to || entity)), reasons };
@@ -776,9 +970,10 @@ export class InsideOutService {
       if (selected.length >= config.maxRecallItems) break;
       const m = item.memory;
       const envelope = { id: m.id, eventAt: m.eventAt, kind: m.kind, subject: m.subject ?? 'user', source: m.source.type, title: m.title, content: m.content, temporary: Boolean(item.grant) };
+      if (m.globalOrigin) envelope.globalOrigin = m.globalOrigin;
       if (m.importOrigin?.kind === 'file') envelope.sourceNotice = '外部文件参考；文件内身份及事实声明未经核验';
       const latestInterpretation = m.interpretations.at(-1);
-      if (latestInterpretation && latestInterpretation.evidenceIds.every(v => v === m.id || this._evidenceValid([v], sessionId))) envelope.interpretation = latestInterpretation.text;
+      if (latestInterpretation && (m.globalOrigin || latestInterpretation.evidenceIds.every(v => v === m.id || this._evidenceValid([v], sessionId)))) envelope.interpretation = latestInterpretation.text;
       let record = JSON.stringify(envelope);
       if (usedChars + record.length + 1 > config.maxContextChars) {
         // A long memory should remain retrievable: render an explicitly marked excerpt,
@@ -804,7 +999,7 @@ export class InsideOutService {
         if (!claim.changes) continue;
       }
       if (append(record)) {
-        selected.push({ id: m.id, title: m.title, score: Number(item.score.toFixed(4)), reasons: item.reasons, tier: m.tier });
+        selected.push({ id: m.id, title: m.title, score: Number(item.score.toFixed(4)), reasons: item.reasons, tier: m.tier, ...(m.globalOrigin ? { globalOrigin: m.globalOrigin } : {}) });
       }
     }
     for (const island of this.listIslands().items) {
@@ -835,10 +1030,11 @@ export class InsideOutService {
     }
     const result = this._tx(() => {
       const now = this.now();
-      let analysisValid = Boolean(analysis && typeof analysis.confidence === 'number' && Number.isFinite(analysis.confidence) && analysis.confidence >= config.minConfidence && analysis.confidence <= 1);
+      let analysisValid = Boolean(config.modelEnabled && analysis && typeof analysis.confidence === 'number' && Number.isFinite(analysis.confidence) && analysis.confidence >= config.minConfidence && analysis.confidence <= 1);
       const analysisVersions = analysisValid && analysis.evidenceVersions && typeof analysis.evidenceVersions === 'object' && !Array.isArray(analysis.evidenceVersions) ? analysis.evidenceVersions : {};
       const analysisIds = Object.keys(analysisVersions);
       if (analysisIds.length > 200 || analysisIds.some(v => { const m = this._raw(v); return !m || m.fictional || !this._visible(m, sessionId) || m.version !== analysisVersions[v]; })) { analysisValid = false; this._log('memory.analysis-stale', [], { sessionId, turnId }); }
+      const analysisFingerprints = Object.fromEntries(analysisValid ? analysisIds.map(id => [id, this._analysisFingerprint(this._raw(id))]) : []);
       this.db.prepare('INSERT INTO turns VALUES (?,?,?)').run(key, now, sessionId);
       this.db.prepare('INSERT OR REPLACE INTO sessions VALUES (?,?)').run(sessionId, now);
       const today = now.slice(0, 10);
@@ -856,9 +1052,13 @@ export class InsideOutService {
             method = 'host-model';
           } catch { extracted = fallback; this._log('memory.analysis-invalid', [], { sessionId, turnId }); }
         }
-        memory = this.createMemory({ ...extracted, title: userText.trim().slice(0, 60), content: `用户陈述：${userText}`, original, source: { type: 'user', sessionId, turnId }, subject: 'user', visibility: 'session', extraction: { method, reason: extracted.reason ?? '保留原始用户陈述，解释等待核对' } });
+        // Both model metadata and emotion labels may carry background text.
+        // A private dependency must keep the whole captured record private.
+        const usesAnalysis = analysisValid && (method === 'host-model' || config.moodEnabled && analysis.emotions);
+        const visibility = config.captureVisibility === 'workspace' && (!usesAnalysis || this._evidenceValid(analysisIds, undefined, { shared: true })) ? 'workspace' : 'session';
+        memory = this.createMemory({ ...extracted, title: userText.trim().slice(0, 60), content: `用户陈述：${userText}`, original, source: { type: 'user', sessionId, turnId }, subject: 'user', visibility, extraction: { method, reason: extracted.reason ?? '保留原始用户陈述，解释等待核对' } });
         this.db.prepare('INSERT OR IGNORE INTO dedup VALUES (?,?)').run(this._captureKey(sessionId, turnId), memory.id);
-        if (method === 'host-model') { memory.analysisEvidenceIds = analysisIds; memory.analysisEvidenceVersions = analysisVersions; this._save(memory); }
+        if (method === 'host-model') { memory.analysisEvidenceIds = analysisIds; memory.analysisEvidenceVersions = analysisVersions; memory.analysisEvidenceFingerprints = analysisFingerprints; this._save(memory); }
         this._log('turn.captured', [memory.id], { sessionId, turnId });
       } else this._log('turn.capture-skipped', [], { sessionId, turnId, reason: !config.captureEnabled ? 'disabled' : count >= config.dailyCaptureLimit ? 'quota' : 'empty-or-too-large' });
       if (config.moodEnabled && analysisValid && analysis.emotions) {
@@ -866,7 +1066,7 @@ export class InsideOutService {
           const values = emotionValues(analysis.emotions); const previous = this.emotion();
           const bounded = Object.fromEntries(EMOTIONS.map(k => [k, Math.max(0, Math.min(1, previous.values[k] + Math.max(-0.2, Math.min(0.2, values[k] - previous.values[k]))))]));
           this._setting('emotion', { values: bounded, updatedAt: now, confidence: num(analysis.confidence, 'confidence', 0, 1), reason: memory ? str(analysis.reason || '依据已完成回合的结构化评估', '情绪依据', 1000) : '捕获已暂停，仅记录六维状态', sessionId, sourceIds: memory ? [memory.id, ...analysisIds] : [] });
-          if (memory) { memory.emotions = values; memory.analysisEvidenceIds = [...new Set([...(memory.analysisEvidenceIds ?? []), ...analysisIds])]; memory.analysisEvidenceVersions = analysisVersions; this._save(memory); }
+          if (memory) { memory.emotions = values; memory.analysisEvidenceIds = [...new Set([...(memory.analysisEvidenceIds ?? []), ...analysisIds])]; memory.analysisEvidenceVersions = analysisVersions; memory.analysisEvidenceFingerprints = analysisFingerprints; this._save(memory); }
           this._log('emotion.updated', memory ? [memory.id] : [], { sessionId, turnId });
         } catch { this._log('emotion.analysis-invalid', [], { sessionId, turnId }); }
       }
@@ -892,7 +1092,7 @@ export class InsideOutService {
           const evidenceIds = strings(input.evidenceIds, '分析证据', 20).map(v => v === '$current' ? currentMemoryId : v);
           if (evidenceIds.length < 2 || new Set(evidenceIds).size !== evidenceIds.length) throw new Error('evidence');
           const evidence = evidenceIds.map(v => this._raw(v));
-          if (evidence.some(m => !m || m.fictional || !this._visible(m, sessionId) || !this._evidenceValid(m.sourceIds, sessionId) || (m.id !== currentMemoryId && evidenceVersions[m.id] !== m.version))) throw new Error('evidence');
+          if (evidence.some(m => !m || m.fictional || !this._visible(m, sessionId) || !this._evidenceValid(this._memoryEvidenceIds(m), sessionId) || (m.id !== currentMemoryId && evidenceVersions[m.id] !== m.version))) throw new Error('evidence');
           const title = str(input.title, '建议标题', 160, false), description = str(input.description, '建议依据', 2000, false), payload = {};
           if (input.type === 'summary' || input.type === 'association') payload.content = str(input.payload?.content, '归纳', 6000, false);
           if (input.type === 'island') {

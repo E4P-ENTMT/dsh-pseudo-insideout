@@ -11,6 +11,8 @@ export function handleApi(service, { method = 'GET', path = '/', body = {} }) {
     if (parts.length === 1 && parts[0] === 'state' && method === 'GET') result = service.state();
     else if (parts.length === 1 && parts[0] === 'memory-default' && method === 'GET') result = service.getMemoryDefault();
     else if (parts.length === 1 && parts[0] === 'memory-default' && method === 'PATCH') result = service.updateMemoryDefault(body);
+    else if (parts.length === 1 && parts[0] === 'memory-sharing' && method === 'GET') result = service.getMemorySharing();
+    else if (parts.length === 1 && parts[0] === 'memory-sharing' && method === 'PATCH') result = service.updateMemorySharing(body);
     else if (parts.length === 1 && parts[0] === 'session-memory' && method === 'GET') result = service.getSessionMemory(query);
     else if (parts.length === 1 && parts[0] === 'session-memory' && method === 'PATCH') result = service.updateSessionMemory(body);
     else if (parts.length === 2 && parts[0] === 'imports' && parts[1] === 'sessions' && method === 'GET') {

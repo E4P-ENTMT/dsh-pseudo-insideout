@@ -20,6 +20,86 @@ const input = (content, extra = {}) => ({ content, source: { type: 'user', sessi
 const approve = (s, proposal) => s.decideDream(proposal.id, { expectedVersion: proposal.version, action: 'approve' });
 const evidenceVersions = items => Object.fromEntries(items.map(item => [item.id, item.version]));
 
+function modeledMemory(s, background, turnId = 'modeled-background') {
+  const result = s.completeTurn({ sessionId: 'a', turnId, userText: '这次谈话让我重新整理经历。', analysis: {
+    confidence: 0.95, evidenceVersions: evidenceVersions([background]),
+    memory: { kind: 'fact', importance: 0.9, tags: ['PRIVATE_BACKGROUND_MARKER'], entities: ['PRIVATE_BACKGROUND_MARKER'], semanticKeys: ['PRIVATE_BACKGROUND_MARKER'], reason: 'PRIVATE_BACKGROUND_MARKER' },
+  } });
+  return s.getMemory(result.memoryId, { tier: 'active' });
+}
+
+test('deleting analysis background removes dependent interpretations without erasing their independent originals', t => {
+  for (const tier of ['active', 'archive']) {
+    const f = fixture(t), s = f.s;
+    const background = s.createMemory(input('PRIVATE_BACKGROUND_MARKER'));
+    const modeled = modeledMemory(s, background);
+    let independent = s.createMemory(input('独立原始经历，不应随另一段解释删除'));
+    independent = s.addInterpretation(independent.id, { expectedVersion: independent.version, text: 'PRIVATE_BACKGROUND_MARKER', evidenceIds: [modeled.id] });
+    const derived = s.createMemory(input('PRIVATE_BACKGROUND_MARKER', { sourceIds: [independent.id], kind: 'reflection' }));
+    if (tier === 'archive') s.archiveMemory(independent.id, { expectedVersion: independent.version });
+    const currentDerived = s.getMemory(derived.id, { tier });
+    s.trashMemory(derived.id, { expectedVersion: currentDerived.version });
+
+    const result = s.deleteMemory(background.id, { expectedVersion: background.version, confirmation: background.id });
+    assert.deepEqual(new Set(result.deletedIds), new Set([background.id, derived.id]), 'report every erased body, but not retained originals');
+    const reopened = f.reopen();
+    const retained = reopened.getMemory(independent.id, { tier });
+    assert.equal(retained.original, independent.original);
+    assert.equal(retained.content, independent.content);
+    assert.deepEqual(retained.interpretations, []);
+    assert.ok(retained.version > independent.version);
+    assert.equal(reopened.getMemory(modeled.id, { tier: 'active' }).extraction.method, 'local-rules-after-invalidation');
+    assert.equal(reopened.state().counts.trash, 0);
+    assert.deepEqual(new Set(reopened.listLogs().items.find(log => log.action === 'memory.deleted').targetIds), new Set(result.deletedIds));
+    for (const store of ['active', 'archive']) assert.equal(readFileSync(join(f.dataDir, store, 'insideout.sqlite')).includes(Buffer.from('PRIVATE_BACKGROUND_MARKER')), false);
+  }
+});
+
+test('restoring modeled memories requires active unchanged background, including unordered batch restores', t => {
+  for (const batch of [false, true]) {
+    const f = fixture(t), s = f.s;
+    const background = s.createMemory(input('PRIVATE_BACKGROUND_MARKER'));
+    const modeled = modeledMemory(s, background);
+    const coldMemory = s.archiveMemory(modeled.id, { expectedVersion: modeled.version }).memory;
+    const coldBackground = s.archiveMemory(background.id, { expectedVersion: background.version }).memory;
+    assert.throws(() => s.restoreMemory(modeled.id, { expectedVersion: coldMemory.version }), { code: 'ARCHIVED_DEPENDENCY' });
+    assert.throws(() => s.batchMemories({ action: 'restore', items: [{ id: modeled.id, expectedVersion: coldMemory.version }] }), { code: 'ARCHIVED_DEPENDENCY' });
+    assert.equal(s.analysisContext({ sessionId: 'a' }).items.length, 0);
+    if (batch) s.batchMemories({ action: 'restore', items: [coldMemory, coldBackground].map(m => ({ id: m.id, expectedVersion: m.version })) });
+    else {
+      s.restoreMemory(background.id, { expectedVersion: coldBackground.version });
+      s.restoreMemory(modeled.id, { expectedVersion: coldMemory.version });
+    }
+    assert.equal(f.reopen().getMemory(modeled.id, { tier: 'active' }).extraction.method, 'host-model');
+  }
+});
+
+test('restoring modeled memories rejects background corrected while their metadata was archived', t => {
+  const f = fixture(t), s = f.s;
+  const background = s.createMemory(input('原始背景'));
+  const modeled = modeledMemory(s, background);
+  const cold = s.archiveMemory(modeled.id, { expectedVersion: modeled.version }).memory;
+  s.updateMemory(background.id, { expectedVersion: background.version, title: '已纠正的分析背景标题', importance: 0.1 });
+  assert.throws(() => s.restoreMemory(modeled.id, { expectedVersion: cold.version }), { code: 'STALE_EVIDENCE' });
+  assert.equal(s.getMemory(modeled.id, { tier: 'archive' }).original, modeled.original);
+});
+
+test('sharing checks model background and interpretation evidence without granting implicit access', t => {
+  const { s } = fixture(t);
+  const privateSource = s.createMemory(input('PRIVATE_BACKGROUND_MARKER'));
+  const modeled = modeledMemory(s, privateSource);
+  assert.throws(() => s.updateMemory(modeled.id, { expectedVersion: modeled.version, visibility: 'workspace' }), { code: 'SCOPE_ESCALATION' });
+  let interpreted = s.createMemory(input('独立记忆'));
+  interpreted = s.addInterpretation(interpreted.id, { expectedVersion: interpreted.version, text: 'PRIVATE_BACKGROUND_MARKER', evidenceIds: [privateSource.id] });
+  assert.throws(() => s.updateMemory(interpreted.id, { expectedVersion: interpreted.version, visibility: 'workspace' }), { code: 'SCOPE_ESCALATION' });
+  assert.equal(s.getMemory(modeled.id, { tier: 'active' }).visibility, 'session');
+  assert.equal(JSON.stringify(s.analysisContext({ sessionId: 'b' })).includes('PRIVATE_BACKGROUND_MARKER'), false);
+  const sharedSource = s.createMemory(input('明确共享的分析背景', { visibility: 'workspace' }));
+  const shareable = modeledMemory(s, sharedSource, 'shared-background');
+  s.updateMemory(shareable.id, { expectedVersion: shareable.version, visibility: 'workspace' });
+  assert.ok(s.searchActive({ sessionId: 'b' }).items.some(m => m.id === shareable.id));
+});
+
 function approvedIsland(f, description) {
   for (const [index, userText] of ['我喜欢喝无糖拿铁。', '我每天早上会喝一杯不加糖的咖啡。', '我还是偏爱咖啡，尤其是不加糖的浓缩咖啡。'].entries()) {
     f.s.completeTurn({ sessionId: 'a', turnId: `island-${index}`, userText });
