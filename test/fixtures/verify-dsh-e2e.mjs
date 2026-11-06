@@ -113,7 +113,14 @@ async function setDefault(enabled) {
   const current = await api('/memory-default')
   return api('/memory-default', { method: 'PATCH', body: { expectedVersion: current.version, enabled } })
 }
-const newContexts = events => events.filter(event => event.type === 'user/message' && event.data?.source?.kind !== 'user').map(event => JSON.stringify(event.data)).join('\n')
+// The harness-source section contains the checkout path, which on GitHub
+// includes our package name even when memory is disabled. Inspect the named
+// memory contribution itself, never unrelated environment text or metadata.
+const newContexts = events => events
+  .filter(event => event.type === 'user/message' && event.data?.source?.kind === 'runtime-context')
+  .flatMap(event => event.data.source.sections || [])
+  .filter(section => section.name === 'dsh-pseudo-insideout')
+  .map(section => section.text).join('\n')
 try {
   const dshVersion = (await command(['--version'], 'version.log')).trim()
   assert.match(dshVersion, /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$/, 'DSH CLI did not return a valid version')
@@ -191,9 +198,7 @@ try {
   await wait(150)
   assert.equal((await api('/memories?limit=100')).items.filter(value => value.source.sessionId === a).length, 3)
   assert.ok(!requests.slice(beforeMutedRequests).some(value => value.kind !== 'conversation'), 'disabled session made an auxiliary call')
-  const mutedContexts = newContexts(muted.events)
-  const unexpectedContext = mutedContexts.indexOf('dsh-pseudo-insideout')
-  assert.equal(unexpectedContext, -1, `disabled turn appended fresh memory context: ${mutedContexts.slice(Math.max(0, unexpectedContext - 120), unexpectedContext + 240)}`)
+  assert.equal(newContexts(muted.events), '', 'disabled turn appended fresh memory context')
   check('单会话关闭后真实回合正常完成且不捕获、不新增注入、不调用辅助模型')
   await setSessionPolicy(a, 'on')
   const reopened = await turn(a, 'E2E_REOPEN_A：现在重新开启，请回想我的表达偏好。')
