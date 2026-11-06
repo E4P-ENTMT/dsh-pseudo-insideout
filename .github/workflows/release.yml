@@ -32,6 +32,8 @@ jobs:
         with:
           node-version: '24.9.0'
           package-manager-cache: false
+      - name: Install DSH package manager
+        run: npm install --global --ignore-scripts --no-audit --no-fund pnpm@11.25.0
       - run: npm ci --ignore-scripts --no-audit --no-fund
       - name: Build versioned installation assets
         run: npm run release:pack

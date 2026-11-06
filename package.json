@@ -1,6 +1,6 @@
 {
   "name": "dsh-pseudo-insideout",
-  "version": "0.0.1",
+  "version": "0.0.2",
   "description": "DSH 记忆与状态插件：独立封存、情绪、人格岛与可视化控制台。",
   "type": "module",
   "license": "MIT",

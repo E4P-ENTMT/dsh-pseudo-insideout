@@ -15,6 +15,8 @@ const here = dirname(fileURLToPath(import.meta.url)), project = resolve(here, '.
 const runtimeArg = process.argv.indexOf('--runtime')
 if (runtimeArg < 0 || !process.argv[runtimeArg + 1]) throw new Error('--runtime must name an existing official DSH installation directory')
 const runtime = resolve(process.argv[runtimeArg + 1]), dsh = join(runtime, 'node_modules/.bin/dsh')
+try { await run('pnpm', ['--version'], { timeout: 10000 }) }
+catch { throw new Error('DSH plugin installation requires pnpm on PATH; install pnpm before running host verification') }
 const tarballArg = process.argv.indexOf('--tarball')
 if (tarballArg >= 0 && !process.argv[tarballArg + 1]?.endsWith('.tgz')) throw new Error('--tarball must name an existing npm .tgz archive')
 const outputArg = process.argv.indexOf('--output')

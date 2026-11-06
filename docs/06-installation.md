@@ -6,7 +6,7 @@
 
 `dsh-pseudo-insideout` 是 DSH Cordis bundle，包含真实宿主入口和浏览器半端，不是单独网页套壳。运行时代码使用 Node 内置模块，没有另外的 API 密钥或运行期 npm 依赖；开发测试使用官方 Cordis、DSH SystemPrompt、工具注册器与 NativeToolExecutor 包。
 
-当前包版本为 `0.0.1`，支持 **DSH `0.2.1-rc.1` 至 `0.2.1-rc.5`、`0.2.2-alpha.2`、`0.2.2-alpha.3`、`0.2.2-rc.1` 的 Web profile**，要求 **Node `>=24.9.0`**。`package.json` 中的兼容范围为：
+当前包版本为 `0.0.2`，支持 **DSH `0.2.1-rc.1` 至 `0.2.1-rc.5`、`0.2.2-alpha.2`、`0.2.2-alpha.3`、`0.2.2-rc.1` 的 Web profile**，要求 **Node `>=24.9.0`**。`package.json` 中的兼容范围为：
 
 ```json
 "engines": {
@@ -19,10 +19,10 @@
 
 ## 获取安装包
 
-直接从 [GitHub Release v0.0.1](https://github.com/E4P-ENTMT/dsh-pseudo-insideout/releases/tag/v0.0.1) 下载 `dsh-pseudo-insideout-0.0.1.tgz`，或将下方完整地址填入 DSH 插件安装器：
+直接从 [GitHub Release v0.0.2](https://github.com/E4P-ENTMT/dsh-pseudo-insideout/releases/tag/v0.0.2) 下载 `dsh-pseudo-insideout-0.0.2.tgz`，或将下方完整地址填入 DSH 插件安装器：
 
 ```text
-https://github.com/E4P-ENTMT/dsh-pseudo-insideout/releases/download/v0.0.1/dsh-pseudo-insideout-0.0.1.tgz
+https://github.com/E4P-ENTMT/dsh-pseudo-insideout/releases/download/v0.0.2/dsh-pseudo-insideout-0.0.2.tgz
 ```
 
 安装无需解压、编译或安装开发依赖。Release 同时提供 `INSTALL.md` 和 `SHA256SUMS`；核对方法见[简明安装指南](../INSTALL.md)。GitHub 自动生成的 Source code 压缩包是源码快照，安装请选择专门的 `.tgz` 附件。当前未发布到 npm，不能只填写裸包名安装。
@@ -34,12 +34,15 @@ https://github.com/E4P-ENTMT/dsh-pseudo-insideout/releases/download/v0.0.1/dsh-p
 ```sh
 dsh --version
 node --version
+pnpm --version
 ```
+
+DSH 的命令行插件安装器依赖 `pnpm`。若提示找不到命令，先执行 `npm install --global pnpm@11.25.0`；该版本支持这里要求的 Node 版本。Desktop 使用应用内置的安装依赖，无需在终端补装。
 
 将安装包 URL 或已下载文件的绝对路径填入命令。升级前按下文备份整个 profile 的插件数据；新增开关与导入能力见 [会话记忆策略](11-session-policy-import.md)。以下 `YOUR_WEB_PROFILE` 替换为自己的 profile 名：
 
 ```sh
-dsh plugin --profile YOUR_WEB_PROFILE add https://github.com/E4P-ENTMT/dsh-pseudo-insideout/releases/download/v0.0.1/dsh-pseudo-insideout-0.0.1.tgz
+dsh plugin --profile YOUR_WEB_PROFILE add https://github.com/E4P-ENTMT/dsh-pseudo-insideout/releases/download/v0.0.2/dsh-pseudo-insideout-0.0.2.tgz
 dsh --profile YOUR_WEB_PROFILE --dump-config
 ```
 
@@ -51,7 +54,7 @@ dsh --profile YOUR_WEB_PROFILE
 
 点击 DSH 主窗口左侧栏的 **“记忆总部”**，在主内容区直接打开控制台。也可在设置中选择 **“记忆总部 · Pseudo Inside Out”**，或在同一个本机 DSH 地址下打开 `/pseudo-insideout/`。首次没有会话时显示未连接；创建/打开根会话后，控制台会出现对应记忆空间。插件停用再启用不删除数据库。
 
-本机访问只接受 `localhost`、`127.0.0.1` 或 `[::1]` 的 Host 与 loopback socket。自定义域名、代理出口、局域网和远程连接会被拒绝；不要通过修改成 `0.0.0.0` 来开放控制台。
+本机访问只接受 `localhost`、`127.0.0.2` 或 `[::1]` 的 Host 与 loopback socket。自定义域名、代理出口、局域网和远程连接会被拒绝；不要通过修改成 `0.0.0.0` 来开放控制台。
 
 ### Desktop 安装
 
@@ -78,7 +81,7 @@ npm pack
 npm start
 ```
 
-预览入口输出的本机地址是控制台与核心的演示运行，不表示已经连接 DSH。预览数据与 DSH 数据独立，runtime 明确显示 standalone/未连接。默认入口为 `http://127.0.0.1:3088/pseudo-insideout/`，数据目录为 `.insideout-dev/`，不预置示例。带合成数据的演示命令见[项目首页](../README.md#独立预览控制台)。
+预览入口输出的本机地址是控制台与核心的演示运行，不表示已经连接 DSH。预览数据与 DSH 数据独立，runtime 明确显示 standalone/未连接。默认入口为 `http://127.0.0.2:3088/pseudo-insideout/`，数据目录为 `.insideout-dev/`，不预置示例。带合成数据的演示命令见[项目首页](../README.md#独立预览控制台)。
 
 ## 宿主选项
 

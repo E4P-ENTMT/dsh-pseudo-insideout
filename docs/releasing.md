@@ -12,11 +12,11 @@
 4. 提交并推送分支，等待 CI 通过，再创建与包版本一致的附注标签，例如：
 
 ```sh
-git tag -a v0.0.1 -m "🚀 chore(release): publish v0.0.1"
-git push origin v0.0.1
+git tag -a v0.0.2 -m "🚀 chore(release): publish v0.0.2"
+git push origin v0.0.2
 ```
 
-`Release` 工作流先执行两版 Node 的测试和打包检查，再用 Node 24.9.0 生成安装资产，将**同一份 tarball**安装到独立的 DSH `0.2.2-rc.1` Web profile，完成本机合成模型流程。全部通过后创建 Release 草稿、上传三个附件并发布为最新版本。它不调用真实模型、不使用用户 DSH profile、不发布 npm，也不会替换已有 Release。
+分支 CI 包含两版 Node 的测试与打包检查，以及 DSH 的完整安装与合成模型流程；这一步通过后再推送版本标签。`Release` 工作流再次检查后，用 Node 24.9.0 生成安装资产，将**同一份 tarball**安装到独立的 DSH `0.2.2-rc.1` Web profile 验收。CI 显式安装 DSH 命令行安装器需要的 `pnpm@11.25.0`。全部通过后创建 Release 草稿、上传三个附件并发布为最新版本。它不调用真实模型、不使用用户 DSH profile、不发布 npm，也不会替换已有 Release。
 
 发布使用 GitHub 内置 `GITHUB_TOKEN` 的仓库内容写权限，无需额外的 npm Token。第三方 Actions 固定到官方提交 SHA。发布日志中的包 SHA-256 可与 Release 附件清单核对。
 

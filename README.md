@@ -10,33 +10,35 @@
 
 给 DeepSeek Harness（DSH）的记忆插件。让对话中的偏好与经历成为后续交流的参考，并在控制台查看、修订、导入或封存这些记忆。
 
-[下载安装包](https://github.com/E4P-ENTMT/dsh-pseudo-insideout/releases/download/v0.0.1/dsh-pseudo-insideout-0.0.1.tgz) · [安装](#安装) · [第一次使用](#第一次使用) · [日常操作](#日常操作) · [常见问题](#常见问题) · [更新记录](CHANGELOG.md)
+[下载安装包](https://github.com/E4P-ENTMT/dsh-pseudo-insideout/releases/download/v0.0.2/dsh-pseudo-insideout-0.0.2.tgz) · [安装](#安装) · [第一次使用](#第一次使用) · [日常操作](#日常操作) · [常见问题](#常见问题) · [更新记录](CHANGELOG.md)
 
 ## 安装
 
 Web profile 要求 **Node.js ≥24.9.0**；支持的 DSH 版本为 **`0.2.1-rc.1` 至 `0.2.1-rc.5`、`0.2.2-alpha.2`、`0.2.2-alpha.3`、`0.2.2-rc.1`**。也已在 **macOS arm64 的 Desktop `0.2.2-rc.1`** 完成基础功能实测，范围见[桌面版验收](docs/desktop-validation.md)。控制台仅支持本机访问。
 
-当前版本 **[v0.0.1](https://github.com/E4P-ENTMT/dsh-pseudo-insideout/releases/tag/v0.0.1)** 通过 GitHub Release 分发，尚未发布到 npm。直接安装 `.tgz` 附件即可，无需克隆仓库、编译或安装开发依赖。
+当前版本 **[v0.0.2](https://github.com/E4P-ENTMT/dsh-pseudo-insideout/releases/tag/v0.0.2)** 通过 GitHub Release 分发，尚未发布到 npm。直接安装 `.tgz` 附件即可，无需克隆仓库、编译或安装开发依赖。
 
 ### Desktop
 
 打开 **插件 → 添加插件**，粘贴以下地址，点击安装并启用：
 
 ```text
-https://github.com/E4P-ENTMT/dsh-pseudo-insideout/releases/download/v0.0.1/dsh-pseudo-insideout-0.0.1.tgz
+https://github.com/E4P-ENTMT/dsh-pseudo-insideout/releases/download/v0.0.2/dsh-pseudo-insideout-0.0.2.tgz
 ```
 
-网络不便时，可先[下载安装包](https://github.com/E4P-ENTMT/dsh-pseudo-insideout/releases/download/v0.0.1/dsh-pseudo-insideout-0.0.1.tgz)，再填写下载文件的绝对路径。无需解压，也不要将 GitHub 自动生成的 Source code 源码压缩包当作安装附件。
+网络不便时，可先[下载安装包](https://github.com/E4P-ENTMT/dsh-pseudo-insideout/releases/download/v0.0.2/dsh-pseudo-insideout-0.0.2.tgz)，再填写下载文件的绝对路径。无需解压，也不要将 GitHub 自动生成的 Source code 源码压缩包当作安装附件。
 
 ### Web profile
+
+命令行安装器需要 `pnpm`。先运行 `pnpm --version`；若提示命令不存在，可执行 `npm install --global pnpm@11.25.0` 安装。本机 Desktop 安装使用应用自带的依赖。
 
 下面以名为 `web` 的 profile 为例；如果你的 profile 名不同，请替换 `web`：
 
 ```sh
-dsh plugin --profile web add https://github.com/E4P-ENTMT/dsh-pseudo-insideout/releases/download/v0.0.1/dsh-pseudo-insideout-0.0.1.tgz
+dsh plugin --profile web add https://github.com/E4P-ENTMT/dsh-pseudo-insideout/releases/download/v0.0.2/dsh-pseudo-insideout-0.0.2.tgz
 ```
 
-也可将 URL 换成已下载 `.tgz` 的绝对路径。Release 附带 [SHA256SUMS](https://github.com/E4P-ENTMT/dsh-pseudo-insideout/releases/download/v0.0.1/SHA256SUMS) 和[独立安装指南](INSTALL.md)。需要从源码验证或打包时，见[开发安装](docs/06-installation.md#从源码验证与打包)。
+也可将 URL 换成已下载 `.tgz` 的绝对路径。Release 附带 [SHA256SUMS](https://github.com/E4P-ENTMT/dsh-pseudo-insideout/releases/download/v0.0.2/SHA256SUMS) 和[独立安装指南](INSTALL.md)。需要从源码验证或打包时，见[开发安装](docs/06-installation.md#从源码验证与打包)。
 
 安装后重启对应的 DSH profile；尚未运行时可直接启动：
 
@@ -136,7 +138,7 @@ npm ci --ignore-scripts
 npm start
 ```
 
-打开 [本机预览](http://127.0.0.1:3088/pseudo-insideout/)。默认没有示例，数据保存在 `.insideout-dev/`。独立预览可手动管理记忆，不连接 DSH 对话。
+打开 [本机预览](http://127.0.0.2:3088/pseudo-insideout/)。默认没有示例，数据保存在 `.insideout-dev/`。独立预览可手动管理记忆，不连接 DSH 对话。
 
 如需带示例的演示，使用单独的数据目录：
 
@@ -144,7 +146,7 @@ npm start
 node scripts/serve.js --data-dir .insideout-demo --port 3089 --demo
 ```
 
-打开 [演示控制台](http://127.0.0.1:3089/pseudo-insideout/)。示例标记为「演示数据」，不调用模型；请勿将演示目录用作真实会话数据目录。
+打开 [演示控制台](http://127.0.0.2:3089/pseudo-insideout/)。示例标记为「演示数据」，不调用模型；请勿将演示目录用作真实会话数据目录。
 
 ## 更多文档
 

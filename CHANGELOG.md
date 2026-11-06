@@ -2,9 +2,18 @@
 
 版本号以 `package.json` 和同名 `v` 前缀 Git Tag 为准；早期设计文档中的 1.0–1.2 是历史开发阶段，不是 GitHub 发布版本。
 
+## [0.0.2] - 2026-11-06
+
+首个可下载安装的 GitHub Release，包含下方 0.0.1 的全部记忆功能和主题界面。
+
+- 补齐 DSH 命令行插件安装器需要的 pnpm，固定 CI 的安装环境。
+- 在创建版本标签前的分支 CI 中加入完整宿主安装检查，发布前再次验证最终附件。
+- 安装指南补充 pnpm 前提和缺失时的处理命令；提供直接安装地址、`.tgz`、中文指南与 SHA-256 校验清单。
+- 同步包版本、界面版本和下载链接；记忆数据格式及功能逻辑不变。
+
 ## [0.0.1] - 2026-11-06
 
-首个 GitHub Release，汇集已完成的记忆功能、修复与控制台更新。
+首次候选标签，汇集已完成的功能与修复。发布前的 CI 宿主安装检查因缺少 pnpm 中止，没有发布安装附件；该标签保留供追溯。
 
 ### 功能
 
@@ -26,4 +35,5 @@
 - GitHub CI 检查测试与打包；发布工作流核对 Tag／包版本后执行完整合成宿主验收，再发布 Release。
 - 137 项源码自动测试；完整合成宿主、浏览器与 macOS Desktop 的实际验证范围分别记录在 `docs/` 下。合成模型测试不代表真实供应商质量评测。
 
-[0.0.1]: https://github.com/E4P-ENTMT/dsh-pseudo-insideout/releases/tag/v0.0.1
+[0.0.2]: https://github.com/E4P-ENTMT/dsh-pseudo-insideout/releases/tag/v0.0.2
+[0.0.1]: https://github.com/E4P-ENTMT/dsh-pseudo-insideout/tree/v0.0.1

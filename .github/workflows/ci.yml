@@ -33,3 +33,25 @@ jobs:
           npm run release:pack
           cd output/release
           sha256sum -c SHA256SUMS
+
+  host:
+    name: DSH installation and host integration
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: '24.9.0'
+          package-manager-cache: false
+      - name: Install DSH package manager
+        run: npm install --global --ignore-scripts --no-audit --no-fund pnpm@11.25.0
+      - run: npm ci --ignore-scripts --no-audit --no-fund
+      - run: npm run release:pack
+      - name: Install and exercise the exact package
+        run: |
+          npm install --prefix output/dsh-runtime --ignore-scripts --no-audit --no-fund --save-exact @deepseek-ai/dsh@0.2.2-rc.1
+          release_version=$(node -p "require('./package.json').version")
+          node test/fixtures/verify-dsh-e2e.mjs --runtime output/dsh-runtime --tarball "output/release/dsh-pseudo-insideout-${release_version}.tgz" --output output/host-validation
